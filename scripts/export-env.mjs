@@ -359,7 +359,8 @@ function pushSecrets(values, worker) {
   for (const [name, value] of Object.entries(values)) {
     const args = ["wrangler", "secret", "put", name];
     if (worker) args.push("--name", worker);
-    const r = spawnSync("npx", args, { cwd: REPO_ROOT, input: value, encoding: "utf8" });
+    const npx = process.platform === "win32" ? "npx.cmd" : "npx"; // Windows 下 npx 是 .cmd，spawnSync 需要带扩展名
+    const r = spawnSync(npx, args, { cwd: REPO_ROOT, input: value, encoding: "utf8", shell: process.platform === "win32" }); // Node 修 CVE-2024-27980 后 spawn .cmd 必须开 shell
     if (r.status === 0) {
       log(`[push] ${name} OK`);
     } else {
