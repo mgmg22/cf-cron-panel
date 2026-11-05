@@ -1,0 +1,89 @@
+{
+  "name": "cf-cron-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "运行在 Cloudflare Worker 上的定时任务面板：每分钟 Cron Trigger 按面板配置调度任务（内置每日签到与线报推送），支持修改 cron、手动运行、查看最近一次结果，密码登录",
+  "type": "module",
+  "cloudflare": {
+    "bindings": {
+      "WB_ACCESS_TOKEN": {
+        "description": "WorkBuddy 访问令牌"
+      },
+      "WB_REFRESH_TOKEN": {
+        "description": "WorkBuddy 刷新令牌（可选，配置后自动续期 token）"
+      },
+      "WB_USER_ID": {
+        "description": "WorkBuddy 用户 ID"
+      },
+      "WB_DOMAIN": {
+        "description": "WorkBuddy 产品域（可选，成长中心按产品路由）"
+      },
+      "TRAE_TOKEN": {
+        "description": "Trae 登录令牌（可选，留空则用刷新 token 登录）"
+      },
+      "TRAE_DEVICE_ID": {
+        "description": "Trae 设备 ID"
+      },
+      "TRAE_USER_ID": {
+        "description": "Trae 用户 ID（可选）"
+      },
+      "TRAE_REFRESH_TOKEN": {
+        "description": "Trae 刷新令牌"
+      },
+      "TRAE_DEVICE_KEY_PEM": {
+        "description": "Trae 设备私钥 base64(PEM) 单行"
+      },
+      "TRAE_DEVICE_PUB_PEM": {
+        "description": "Trae 设备公钥 base64(PEM) 单行"
+      },
+      "TRAE_MACHINE_ID": {
+        "description": "Trae 机器 ID（可选）"
+      },
+      "MINIMAX_TOKEN": {
+        "description": "MiniMax 登录令牌"
+      },
+      "MINIMAX_USER_ID": {
+        "description": "MiniMax 用户 ID"
+      },
+      "MINIMAX_UUID": {
+        "description": "MiniMax 设备 UUID（可选）"
+      },
+      "MINIMAX_DEVICE_ID": {
+        "description": "MiniMax 设备 ID（可选）"
+      },
+      "API_KEY": {
+        "description": "XB 线报 AI 分析用 OpenAI 兼容接口密钥"
+      },
+      "API_URL": {
+        "description": "XB 线报 AI 分析用接口地址（含 /chat/completions）"
+      },
+      "XB_BOT_TOKEN": {
+        "description": "XB 线报钉钉机器人 access_token"
+      },
+      "XB_BOT_TOKEN_SECRET": {
+        "description": "XB 线报钉钉机器人加签密钥（可选）"
+      },
+      "NOTIFY_PUSH_KEY": {
+        "description": "server酱 PUSH_KEY_MY（通知用，可选）"
+      },
+      "ADMIN_PASSWORD": {
+        "description": "面板登录密码（必填才能使用面板；建议 16 位以上）"
+      }
+    }
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "dryrun": "wrangler deploy --dry-run --outdir dist",
+    "export-env": "node scripts/export-env.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261027.1",
+    "typescript": "^5.5.0",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.153.0"
+  }
+}

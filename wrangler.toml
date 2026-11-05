@@ -1,0 +1,20 @@
+# Worker 名与项目名无需一致；修改 name 会部署为新 Worker（Secrets、域名、Git 集成需重配）
+name = "cf-cron-panel"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# 每分钟触发一次；具体哪些任务到点由面板里保存在 KV 的 cron 决定（北京时间，默认值见 src/tasks/registry.ts）。
+# 触发器本身无需随任务 cron 修改，改 cron 请到面板。
+[triggers]
+crons = ["* * * * *"]
+
+# 面板静态页面（public/）；/api/* 先进入 Worker，登录校验见 src/auth.ts。
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+# KV 用途：面板任务配置与最近一次结果、Trae/WorkBuddy/MiniMax 滚动 token 缓存、XB 已推送线报 id 去重（关闭则线报重复推送、面板无法保存配置）。
+# 不写 id：首次 wrangler deploy 自动创建命名空间（以 Worker 名为前缀）并绑定；要改用已有命名空间，在下面加 id = "<命名空间 id>"。
+[[kv_namespaces]]
+binding = "CHECKIN_STATE"
