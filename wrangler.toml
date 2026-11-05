@@ -19,6 +19,6 @@ run_worker_first = ["/api/*"]
 [[kv_namespaces]]
 binding = "CHECKIN_STATE"
 
-# Workers Logs：控制台可查实时日志与异常堆栈（排查 1101 用；免费版每天 20 万条额度）
+# Workers Logs：控制台可查实时日志与异常堆栈（免费版每天 20 万条额度）
 [observability]
 enabled = true

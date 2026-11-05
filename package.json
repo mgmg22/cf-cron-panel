@@ -57,9 +57,6 @@
       "MINIMAX_ACCESS_TOKEN": {
         "description": "MiniMax 短时访问令牌（mmoat_ 开头，可选；正常情况下由 Worker 自行刷新）"
       },
-      "MINIMAX_TOKEN": {
-        "description": "兼容旧变量：仅当值为 mmoat_ 开头时作为 accessToken 兜底；旧版 JWT 已被上游停用"
-      },
       "MINIMAX_USER_ID": {
         "description": "MiniMax 用户 ID"
       },

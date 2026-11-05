@@ -56,10 +56,10 @@ describe("cleanValue", () => {
 });
 
 describe("OAuth2 凭据辅助函数", () => {
-  it("只发 Bearer 头，不再使用旧 token: 头", () => {
+  it("只发 Bearer 头", () => {
     expect(buildAuthHeader("mmoat_abc")).toBe("Bearer mmoat_abc");
   });
-  it("忽略 JWT 时代的旧 KV 结构，读取新结构", () => {
+  it("忽略字段不完整的 KV 记录，读取完整结构", () => {
     expect(readCachedAuth({ token: "eyJhbGciOiJIUzI1NiJ9.x.y", updated_at: 1 })).toBeNull();
     expect(readCachedAuth(null)).toBeNull();
     expect(readCachedAuth({
@@ -179,14 +179,14 @@ describe("run() OAuth2 自续签到", () => {
     expect(f.mock.calls.filter((c) => String(c[0]).startsWith("https://account.minimax.io/oauth2/token"))).toHaveLength(1);
   });
 
-  it("只有旧 JWT 时给出重新授权指引", async () => {
+  it("未配置任何凭据时给出重新授权指引", async () => {
     const kv = mockKv();
     const f = vi.fn();
     vi.stubGlobal("fetch", f);
-    const r = await run(baseEnv(kv, { MINIMAX_TOKEN: "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjF9.abc" }));
+    const r = await run(baseEnv(kv));
     expect(r.flag).toBe("AUTH_EXPIRED");
     expect(r.content).toContain("--login-minimax");
-    expect(r.content).toContain("旧版 JWT");
+    expect(r.content).toContain("未找到 refresh token");
     expect(f).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// 从本机已登录的桌面端读取 WorkBuddy / Trae / MiniMax 的登录态，导出 Worker 所需变量，
+// 导出 Worker 所需变量：WorkBuddy / Trae 读本机桌面端登录态，MiniMax 走 OAuth2 设备授权，
 // 可选直接推送到 Cloudflare Secrets（wrangler secret put）。
 //
 // 用法：
 //   node scripts/export-env.mjs                          # 打印 KEY=VALUE（stdout），诊断信息走 stderr
-//   node scripts/export-env.mjs --only trae,minimax      # 只处理指定应用（workbuddy / trae / minimax）
+//   node scripts/export-env.mjs --only trae              # 只处理指定应用（workbuddy / trae；minimax 请用 --login-minimax）
 //   node scripts/export-env.mjs --mask                   # 值只显示首尾几位，便于检查
 //   node scripts/export-env.mjs --json                   # 以 JSON 输出
 //   node scripts/export-env.mjs --push [--worker 名称]   # 推送到 Cloudflare Secrets
@@ -14,8 +14,7 @@
 //   node scripts/export-env.mjs --login-minimax --resume # 中断后续接等待授权（device_code 仍在有效期内）
 //   node scripts/export-env.mjs --login-minimax --minimax-user-id <id>  # 指定签到用用户 ID（也可用 MINIMAX_USER_ID 环境变量或 .dev.vars）
 //
-// MiniMax 新版桌面端（MiniMax Code）已改为 OAuth2 设备授权，旧 minimax-agent-config.json 里不再有 token；
-// --only minimax 会直接提示改用 --login-minimax。设备授权得到的是独立于桌面端会话的 refresh token，
+// MiniMax 凭据由 --login-minimax 设备授权获得（不读本机文件），refresh token 独立于桌面端会话；
 // Worker 每次运行自行刷新并把轮换后的值写入 KV，不会把桌面端挤下线。
 //
 // WorkBuddy 支持双账号：账号 1 用 WB_*，账号 2 用 WB2_*（不配 WB2_* 则只跑账号 1）。
@@ -28,7 +27,7 @@
 //   ADMIN_PASSWORD（面板登录密码）/ MINIMAX_USER_ID
 //   例：API_KEY=xxx API_URL=https://... node scripts/export-env.mjs --push
 //
-// 登录态路径覆盖：--workbuddy-info / --trae-storage / --minimax-config <文件路径>
+// 登录态路径覆盖：--workbuddy-info / --trae-storage <文件路径>
 // 仅依赖 Node >= 18 内置模块。导出的值包含访问令牌与设备私钥，注意不要写入仓库或日志。
 
 import crypto from "node:crypto";
@@ -64,9 +63,15 @@ function parseArgs(argv) {
     else if (a === "--only") opts.only = valueOf(i++, a).split(",").map((s) => s.trim().toLowerCase());
     else if (a === "--workbuddy-info") opts.paths.workbuddy = valueOf(i++, a);
     else if (a === "--trae-storage") opts.paths.trae = valueOf(i++, a);
-    else if (a === "--minimax-config") opts.paths.minimax = valueOf(i++, a);
     else if (a === "-h" || a === "--help") {
-      console.error(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 32).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      // 帮助内容就是文件头部注释，遇第一行代码即止（注释行数变动无需同步改这里）
+      const lines = fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1);
+      const help = [];
+      for (const l of lines) {
+        if (l.trim() && !l.startsWith("//")) break;
+        help.push(l.replace(/^\/\/ ?/, ""));
+      }
+      console.error(help.join("\n").trimEnd());
       process.exit(0);
     } else fail(`未知参数：${a}`);
   }
@@ -343,10 +348,10 @@ function exportTrae(override) {
 
 // ---- MiniMax（OAuth2 设备授权） ----
 
-// 桌面端 MiniMax Code 已停用旧 JWT（token: 头 / /v1/api/user/renewal），改为标准 OAuth2 设备授权：
+// MiniMax OAuth2 设备授权：
 //   device/code 下发 device_code + 浏览器授权链接 → oauth2/token 轮询换 access/refresh token
 //   → refresh token 每次刷新会轮换，Worker 把新值写回 KV（绝不能复用桌面端自己的 refresh token）
-// 端点与参数逆向自 app.asar 内 mcode-tools 的 contracts.js / oauth-client.js / endpoint-config.js。
+// 端点与参数以官方客户端 app.asar 内 mcode-tools 的 contracts.js / oauth-client.js / endpoint-config.js 为准。
 const MM_ACCOUNT_ORIGIN = "https://account.minimax.io"; // 国际版；国内版为 https://account.minimax.cn
 const MM_DEVICE_CODE_URL = `${MM_ACCOUNT_ORIGIN}/oauth2/device/code`;
 const MM_TOKEN_URL = `${MM_ACCOUNT_ORIGIN}/oauth2/token`;
@@ -544,9 +549,9 @@ async function loginMinimax(opts) {
   return values;
 }
 
-/** 旧路径已废弃：桌面端配置文件里不再有 token，且共用桌面端 refresh token 会把桌面端挤下线。 */
+/** MiniMax 不读本机文件；--only minimax 时给出设备授权指引。 */
 function exportMinimax() {
-  throw new Error("MiniMax 已改用 OAuth2 设备授权；请运行 node scripts/export-env.mjs --login-minimax [--push]");
+  throw new Error("MiniMax 凭据需通过 OAuth2 设备授权获取；请运行 node scripts/export-env.mjs --login-minimax [--push]");
 }
 
 // ---- 输出 / 推送 ----

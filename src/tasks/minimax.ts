@@ -1,12 +1,11 @@
-/// MiniMax Code 每日签到任务（OAuth2 设备授权版）。
-/// 上游已把鉴权从「本地 JWT + token: 头 + /v1/api/user/renewal 续期」换成
-/// 「OAuth2 设备授权 + Authorization: Bearer mmoat_...」，旧链路一律 401。
+/// MiniMax Code 每日签到任务。
+/// 鉴权为 OAuth2 设备授权 + Authorization: Bearer mmoat_...。
 ///
 /// 长效凭据是 --login-minimax 设备授权拿到的独立 refresh token（存 Secret MINIMAX_REFRESH_TOKEN）。
 /// 每次运行：KV 中缓存的 accessToken 未过期就直接用；否则调 oauth2/token 刷新。
 /// refresh token 会轮换且有重用检测，所以刷新成功后必须立刻把新 rt 写回 KV；
 /// 缓存优先 + 尽量少刷新，避免两次运行并发刷新同一个 rt 导致凭据家族作废。
-/// 签到接口的 yy / x-signature 签名见 signRequest（与鉴权头无关，保持不变）。
+/// 签到接口的 yy / x-signature 签名见 signRequest，与鉴权头无关。
 
 import type { CheckinResult, Env } from "../types";
 import { md5hex } from "../lib/md5";
@@ -18,7 +17,7 @@ const HOST = "https://agent.minimax.io";
 const STATUS_PATH = "/minimax-cloud/api/v1/signin/status";
 const CLAIM_PATH = "/minimax-cloud/api/v1/signin/claim";
 
-// 与桌面端 MiniMax Code 一致的标准 OAuth2 配置（逆向自 app.asar / mcode-tools）
+// OAuth2 配置以官方客户端 app.asar / mcode-tools 为准
 const OAUTH_TOKEN_URL = "https://account.minimax.io/oauth2/token";
 const OAUTH_CLIENT_ID = "mcode-public";
 const OAUTH_SCOPE = "agent.default";
@@ -104,7 +103,7 @@ interface Signed {
   bodyStr: string;
 }
 
-/** 新版只认 Authorization: Bearer；旧 token: 头已废弃（实测单独 Bearer 亦为 200）。 */
+/** 鉴权头固定为 Authorization: Bearer。 */
 export function buildAuthHeader(token: string): string {
   return `Bearer ${token}`;
 }
@@ -172,7 +171,7 @@ function serverMsg(d: any): string {
 
 // ---- OAuth2 凭据 ----
 
-/** KV 中的滚动凭据。旧结构 {token, updated_at}（JWT 时代）会被忽略，避免拿废弃 token 去刷新。 */
+/** KV 中的滚动凭据；字段不完整的记录一律视为无效，避免拿残缺数据去刷新。 */
 export interface MiniMaxAuth {
   accessToken: string;
   refreshToken: string;
@@ -277,26 +276,23 @@ async function resolveAccessToken(env: Env, force = false): Promise<TokenResolut
     }
   }
 
-  // 刷新失败时的最后兜底：环境变量里直接给的 mmoat_ token（或 KV 里的旧 token，服务端可能仍有宽限）
-  const direct = [cleanValue(env.MINIMAX_ACCESS_TOKEN || ""), cleanValue(env.MINIMAX_TOKEN || "")]
-    .filter((t) => t.startsWith("mmoat_"));
-  if (direct.length) {
+  // 刷新失败时的最后兜底：env 里直接给的 mmoat_ accessToken，其次沿用 KV 缓存的 token（可能已过期）
+  const direct = cleanValue(env.MINIMAX_ACCESS_TOKEN || "");
+  if (direct.startsWith("mmoat_")) {
     warnings.push(`refresh token 刷新失败（${failures.join("；") || "未配置"}），本次改用环境变量 accessToken`);
-    return { token: direct[0], source: "环境变量 accessToken", refreshed: false, warnings, error: "" };
+    return { token: direct, source: "环境变量 accessToken", refreshed: false, warnings, error: "" };
   }
   if (cache?.accessToken) {
     warnings.push(`refresh token 刷新失败（${failures.join("；") || "未配置"}），本次沿用已过期的缓存 token`);
     return { token: cache.accessToken, source: "KV 缓存（可能已过期）", refreshed: false, warnings, error: "" };
   }
 
-  const legacy = cleanValue(env.MINIMAX_TOKEN || "");
-  const legacyHint = legacy && !legacy.startsWith("mmoat_") ? "（当前 MINIMAX_TOKEN 是旧版 JWT，上游已停用）" : "";
   return {
     token: "",
     source: "",
     refreshed: false,
     warnings,
-    error: `MiniMax OAuth2 凭据不可用：${failures.join("；") || "未找到 refresh token"}${legacyHint}。`,
+    error: `MiniMax OAuth2 凭据不可用：${failures.join("；") || "未找到 refresh token"}。`,
   };
 }
 

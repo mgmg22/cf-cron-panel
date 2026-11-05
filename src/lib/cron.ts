@@ -13,7 +13,7 @@ export interface CronSpec {
   hour: Set<number>;
   dom: Set<number>;
   month: Set<number>;
-  dow: Set<number>; // 已把 7 归一为 0
+  dow: Set<number>; // 周日统一存 0（集合里不会出现 7）
   domStar: boolean;
   dowStar: boolean;
 }
