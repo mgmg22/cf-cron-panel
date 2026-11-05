@@ -18,3 +18,7 @@ run_worker_first = ["/api/*"]
 # 不写 id：首次 wrangler deploy 自动创建命名空间（以 Worker 名为前缀）并绑定；要改用已有命名空间，在下面加 id = "<命名空间 id>"。
 [[kv_namespaces]]
 binding = "CHECKIN_STATE"
+
+# Workers Logs：控制台可查实时日志与异常堆栈（排查 1101 用；免费版每天 20 万条额度）
+[observability]
+enabled = true

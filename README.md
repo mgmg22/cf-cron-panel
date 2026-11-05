@@ -125,13 +125,13 @@ node scripts/export-env.mjs --push             # 推送到 Cloudflare Secrets（
 - 读写统一走 `lib/kv.ts`，失败不抛异常：读取失败时 Trae / WorkBuddy 在续期失败提示里注明“读取 KV 失败”，MiniMax 只记日志；XB 读取 `xb_seen` 失败（含 JSON 损坏）则放弃本轮，避免重推并覆盖历史，需要时到控制台删除该键；面板读取 `cfg:tasks` 失败时调度回退默认配置，但保存配置会被拒绝（避免覆盖已有配置），同样需要时到控制台删除或修复该键。
 - WorkBuddy：需配置 `WB_REFRESH_TOKEN` 才会续期（距过期不足 72 小时，或签到返回 401/403 时调用 `/v2/plugin/auth/token/refresh`，续期会轮换 refresh_token）；主动续期失败时沿用现有 token 继续签到。账号 2 同理（`WB2_REFRESH_TOKEN`）。
 - 首次运行或 KV 为空时，依赖 secrets 里的初始 token / refresh_token。
-- `wrangler.toml` 的 KV 绑定不写 `id`：首次 `wrangler deploy` 自动创建命名空间（以 Worker 名为前缀）；要改用已有命名空间，在 `[[kv_namespaces]]` 里加 `id = "<命名空间 id>"`。
+- `wrangler.toml` 的 KV 绑定写明 `id`（已有命名空间，保证 `wrangler dev --remote` 可用）；如要重建全新命名空间，删掉 `id` 后首次 `wrangler deploy` 会自动创建（以 Worker 名为前缀）。
 
 ## 本地开发
 
 ```bash
 npm install
-# 新建 .dev.vars（已被 .gitignore 忽略），内容为 KEY=VALUE，key 与上面的变量名一致
+node scripts/export-env.mjs > .dev.vars   # 从桌面端导出登录态到 .dev.vars（已被 .gitignore 忽略）；ADMIN_PASSWORD 需手动补填
 npm test              # vitest 单元测试
 npm run typecheck     # tsc --noEmit
 npm run dev           # wrangler dev；打开 http://localhost:8787 即面板；定时触发可用 curl "http://localhost:8787/cdn-cgi/local/scheduled" 模拟
@@ -174,6 +174,11 @@ node scripts/export-env.mjs --push
 ```
 
 部署后在控制台 Settings → Triggers 应只有一条 `* * * * *` 的 Cron；排查看 Cron Events / Workers Logs。首次部署后设置 `ADMIN_PASSWORD`（见「面板登录」）。
+
+### 自定义域名与可观测性（可选）
+
+- **Custom Domain**：`workers.dev` 域名在部分地区可能被 DNS 污染或屏蔽，建议在控制台（Worker → Settings → Domains & Routes → Add Custom Domain）或用 API `PUT /accounts/{acc}/workers/domains` 绑定自己的域名，DNS 记录与证书自动签发。注意 wrangler 4.153 对带 `[assets]` 的 Worker 会**静默跳过** `wrangler.toml` 里的 `routes` 配置，Custom Domain 需在控制台或 API 注册；若把 `routes` 写进 `wrangler.toml`，它必须位于所有 `[表头]` 之前（否则被归入上一个表）。
+- **Workers Logs**：`wrangler.toml` 加 `[observability]`（`enabled = true`）后，控制台 Worker 的「日志」页可查历史日志与异常堆栈（免费版每天 20 万条额度），排查 1101 等错误时按 `$workers.outcome = "exception"` 过滤。
 
 ## 实现要点
 
