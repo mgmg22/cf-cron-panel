@@ -10,7 +10,7 @@
 | --- | --- |
 | WorkBuddy | 多账号每日签到 + 成长中心（派猫旅行/开盲盒），并汇总「总剩余积分」 |
 | Trae Work | 每日积分签到，内置 ECDSA 设备私钥自动续期 token |
-| MiniMax Code | 每日积分签到，先续期再签到 |
+| MiniMax Code | 每日积分签到，OAuth2 refresh token 自动换 accessToken 后签到 |
 | XB 线报 | 抓 0818tuan 线报 → 黑白名单过滤 → KV 去重 → AI 评分 → 钉钉推 markdown |
 
 ## 定时与面板
@@ -79,7 +79,7 @@ npx wrangler secret put ADMIN_PASSWORD
 - Trae：`TRAE_TOKEN` / `TRAE_DEVICE_ID` / `TRAE_USER_ID` / `TRAE_REFRESH_TOKEN` /
   `TRAE_DEVICE_KEY_PEM` / `TRAE_DEVICE_PUB_PEM`（base64(PEM) 单行或真 PEM）/ `TRAE_MACHINE_ID`（可选）；
   `TRAE_APP_VERSION` 内置默认 `1.107.1`，可选覆盖
-- MiniMax：`MINIMAX_TOKEN` / `MINIMAX_USER_ID` / `MINIMAX_UUID`（可选）/ `MINIMAX_DEVICE_ID`（可选）
+- MiniMax：`MINIMAX_REFRESH_TOKEN`（浏览器设备授权一次性获得，必需）/ `MINIMAX_USER_ID` / `MINIMAX_UUID`（可选）/ `MINIMAX_DEVICE_ID`（可选）；`MINIMAX_ACCESS_TOKEN` 可选（短时令牌兜底，正常由 Worker 自行刷新），`MINIMAX_TOKEN` 仅作旧版兼容（旧 JWT 已被上游停用）
 - XB 线报：`API_KEY` / `API_URL`（OpenAI 兼容接口，含 `/chat/completions`）、`XB_BOT_TOKEN` / `XB_BOT_TOKEN_SECRET`（可选，钉钉加签）
 - 通知：`NOTIFY_PUSH_KEY`（server酱）
 - 面板：`ADMIN_PASSWORD`（登录密码，见上一节，必填才能使用面板）
@@ -92,19 +92,24 @@ npx wrangler secret put ADMIN_PASSWORD
 | --- | --- | --- |
 | WorkBuddy | `CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info`；或 `--login-workbuddy` 浏览器授权登录 | `WB_USER_ID`、`WB_DOMAIN`、`WB_ACCESS_TOKEN`、`WB_REFRESH_TOKEN`（见下方说明） |
 | Trae | `<TRAE SOLO CN 或 Trae CN>/User/globalStorage/storage.json`（解密 `iCubeAuthInfo://` 信封） | `TRAE_TOKEN` / `TRAE_DEVICE_ID` / `TRAE_USER_ID` / `TRAE_REFRESH_TOKEN` / `TRAE_DEVICE_KEY_PEM` / `TRAE_DEVICE_PUB_PEM`（base64 单行）/ `TRAE_MACHINE_ID` |
-| MiniMax | `MiniMax Agent/minimax-agent-config.json` | `MINIMAX_TOKEN` / `MINIMAX_USER_ID`（`MINIMAX_UUID` / `MINIMAX_DEVICE_ID` 使用 Worker 内默认值，Worker 每次运行会先续期 token） |
+| MiniMax | **不读本机文件**，`--login-minimax` 走浏览器设备授权 | `MINIMAX_REFRESH_TOKEN` / `MINIMAX_ACCESS_TOKEN` / `MINIMAX_USER_ID`（用户 ID 取自 `--minimax-user-id`、`MINIMAX_USER_ID` 环境变量或 `.dev.vars`） |
 
-文件所在根目录：Windows 为 `%APPDATA%` / `%LOCALAPPDATA%`，macOS 为 `~/Library/Application Support`，Linux 为 `~/.config`；也可用 `--workbuddy-info` / `--trae-storage` / `--minimax-config` 指定文件。
+文件所在根目录：Windows 为 `%APPDATA%` / `%LOCALAPPDATA%`，macOS 为 `~/Library/Application Support`，Linux 为 `~/.config`；也可用 `--workbuddy-info` / `--trae-storage` 指定文件。MiniMax 旧配置文件 `MiniMax Agent/minimax-agent-config.json` 里已不再存 token，`--only minimax` 会直接提示改用 `--login-minimax`。
 
 ```bash
 node scripts/export-env.mjs                    # 打印 KEY=VALUE（诊断信息走 stderr）
 node scripts/export-env.mjs --only trae --mask # 只导出 Trae，值只显示首尾几位
 node scripts/export-env.mjs --json             # JSON 输出
 node scripts/export-env.mjs --push             # 推送到 Cloudflare Secrets（--worker 指定 Worker 名）
+node scripts/export-env.mjs --login-minimax --push   # MiniMax 浏览器设备授权并直接推送 Secrets
+node scripts/export-env.mjs --login-minimax --resume # 授权中断后续接等待（device_code 仍在有效期内）
 ```
 
-- `--push` 时，shell 环境里已设置的 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `NOTIFY_PUSH_KEY` / `API_KEY` / `API_URL` / `XB_BOT_TOKEN` / `XB_BOT_TOKEN_SECRET` / `ADMIN_PASSWORD` 会一并推送，且优先于本机读取值：`API_KEY=... API_URL=... node scripts/export-env.mjs --push`。
+- `--push` 时，shell 环境里已设置的 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `NOTIFY_PUSH_KEY` / `API_KEY` / `API_URL` / `XB_BOT_TOKEN` / `XB_BOT_TOKEN_SECRET` / `ADMIN_PASSWORD` / `MINIMAX_USER_ID` 会一并推送，且优先于本机读取值：`API_KEY=... API_URL=... node scripts/export-env.mjs --push`。
 - WorkBuddy 桌面端把 `accessToken` 加密存储（`{ $wbEncrypted, envelope }`，密钥不在该文件内），脚本无法从文件读取，只导出 `WB_USER_ID` / `WB_DOMAIN`。需要令牌时用 `--login-workbuddy`：脚本向设备授权端点（`copilot.tencent.com`，授权专用，与 Worker 的业务主域无关）申请授权，打印授权链接，在浏览器登录后自动轮询换取 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `WB_USER_ID` / `WB_DOMAIN`（5 分钟内有效）；也可手动设置环境变量后 `--push`。`--push` 时 access / refresh token 需一起推送。注意：授权完成后应检查 token 的 JWT `sub` 是否存在——无 `sub` 的空壳 token 无法调用业务接口，需在官方客户端登录一次该账号后重新授权。
+- **MiniMax 设备授权**（新版桌面端 MiniMax Code 已弃用旧 JWT）：`--login-minimax` 用官方 OAuth2 端点（`account.minimax.io/oauth2/device/code` → `/oauth2/token`，client_id `mcode-public`、scope `agent.default`、audience `agent-backend`、PKCE S256）申请设备码并打印授权链接；浏览器登录同一账号后自动换取**独立**的 `refresh_token`，与桌面端会话互不干扰。Worker 每次运行先用它刷新 accessToken、把**轮换后**的 refresh token 写回 KV，再以 `Authorization: Bearer mmoat_...` 调签到接口。`MINIMAX_USER_ID` 须与授权账号一致（脚本从 `--minimax-user-id`、环境变量或 `.dev.vars` 读取，并做一次签到接口验证）。授权中断可用 `--resume` 续接，设备码 5 分钟内有效。
+  - **不要把桌面端 `~/.minimax/auth/prod/en/mcode-public/auth.json` 里的 refresh token 直接给 Worker**：两端共用同一 rt，轮换时的重用检测会把桌面端挤下线。
+  - 旧的 `token:` 请求头与 `/v1/api/user/renewal` 续期接口已被上游停用（一律 401），`MINIMAX_TOKEN` 里的旧 JWT 不再可用。
 - 某个应用读取失败只会跳过该应用，不影响其他应用；全部失败时退出码为 1。
 - 导出内容含访问令牌和设备私钥，不要写入仓库或日志。
 
@@ -114,14 +119,14 @@ node scripts/export-env.mjs --push             # 推送到 Cloudflare Secrets（
 | --- | --- | --- |
 | `trae` | `{token, refresh_token, expires_ms, refresh_expires_ms, base, updated_at}` | Trae 续期后的滚动凭据；`base` 为生成记录时的 `TRAE_TOKEN` |
 | `workbuddy:<uid>` | `{token, refresh_token, expires_ms, base, updated_at}` | WorkBuddy 续期后的滚动凭据（多账号按 uid 分键）；`base` 为生成记录时的 `WB_ACCESS_TOKEN`，secret 被重新推送（值变化）后该记录作废 |
-| `minimax` | `{token, updated_at}` | MiniMax 续期后的 token |
+| `minimax` | `{accessToken, refreshToken, expiresAtMs, updated_at}` | MiniMax OAuth2 滚动凭据（旧结构 `{token, updated_at}` 会被忽略） |
 | `cfg:tasks` | `{checkin: {cron, enabled}, xb: {cron, enabled}}` | 面板保存的任务配置；缺失或字段非法的项回退默认值 |
 | `run:<id>` | `{trigger, startedAt, flag, content}` | 任务最近一次运行结果（`content` 最多保留 8000 字符），每次运行覆盖 |
 | `xb_seen` | `number[]`（最多 5000 个 path_id） | XB 线报去重 |
 
 - 绑定可选：不配置时 token 不跨次缓存，线报会重复推送，面板无法保存配置和运行结果（任务按默认 cron 运行）。
 - Trae / WorkBuddy：记录里的 `base` 与当前 secret 不一致（secret 被重新推送）时忽略 KV，以 secret 为准；重新推送时 access / refresh token 需一起更新。续期会轮换 refresh_token，KV 写入失败会在结果里提示。
-- MiniMax：env 与 KV 里的 token 都作为候选，未过期的优先，到期时间晚的排前。
+- MiniMax：KV 里未过期的 accessToken 直接复用（不触发轮换）；到期或缺失才用 refresh token 刷新，成功后立即把新 rt 写回 KV，尽量避免并发刷新同一 rt。Secret 里的初始 rt 只在 KV 为空/失效时兜底——KV 丢失可能需要重新授权。缓存 token 被判 401 时强制刷新一次再重试。
 - 读写统一走 `lib/kv.ts`，失败不抛异常：读取失败时 Trae / WorkBuddy 在续期失败提示里注明“读取 KV 失败”，MiniMax 只记日志；XB 读取 `xb_seen` 失败（含 JSON 损坏）则放弃本轮，避免重推并覆盖历史，需要时到控制台删除该键；面板读取 `cfg:tasks` 失败时调度回退默认配置，但保存配置会被拒绝（避免覆盖已有配置），同样需要时到控制台删除或修复该键。
 - WorkBuddy：需配置 `WB_REFRESH_TOKEN` 才会续期（距过期不足 72 小时，或签到返回 401/403 时调用 `/v2/plugin/auth/token/refresh`，续期会轮换 refresh_token）；主动续期失败时沿用现有 token 继续签到。账号 2 同理（`WB2_REFRESH_TOKEN`）。
 - 首次运行或 KV 为空时，依赖 secrets 里的初始 token / refresh_token。
@@ -131,7 +136,7 @@ node scripts/export-env.mjs --push             # 推送到 Cloudflare Secrets（
 
 ```bash
 npm install
-node scripts/export-env.mjs > .dev.vars   # 从桌面端导出登录态到 .dev.vars（已被 .gitignore 忽略）；ADMIN_PASSWORD 需手动补填
+node scripts/export-env.mjs --only workbuddy,trae > .dev.vars  # 导出桌面端登录态到 .dev.vars（已被 .gitignore 忽略）；ADMIN_PASSWORD 需手动补填，MiniMax 走 --login-minimax
 npm test              # vitest 单元测试
 npm run typecheck     # tsc --noEmit
 npm run dev           # wrangler dev；打开 http://localhost:8787 即面板；定时触发可用 curl "http://localhost:8787/cdn-cgi/local/scheduled" 模拟
@@ -186,11 +191,11 @@ node scripts/export-env.mjs --push
 - **通知结果**：`lib/notify.ts` 的 `notifyServerJ` / `notifyDingding` 返回是否推送成功（未配置 key 视为成功），不抛异常；钉钉要求 HTTP 2xx 且 `errcode === 0`。
 - **公共判断**：`lib/api.ts` 提供各接口共用的业务成功 / HTTP 鉴权失败 / HTTP 限频判断；各任务自己的鉴权关键词、业务 code 仍留在任务内。
 - **编码工具**：`lib/encoding.ts` 提供 base64 / base64url / hex / 随机十六进制串，`crypto.ts`、`jwt.ts`、`notify.ts` 及各任务共用。
-- **JWT 解析**：`lib/jwt.ts` 的 `decodeJwtExp` 供 Trae（过期前 48 小时主动续期）、WorkBuddy（过期前 72 小时主动续期）和 MiniMax（候选 token 排序）使用，解码失败返回 0；`decodeJwtSub` 供 WorkBuddy 识别未绑定用户身份的空壳 token（JWT 无 sub 时上游拒绝全部业务接口，续期无效）。Trae / WorkBuddy 主动续期失败时沿用现有 token 继续签到。
+- **JWT 解析**：`lib/jwt.ts` 的 `decodeJwtExp` 供 Trae（过期前 48 小时主动续期）、WorkBuddy（过期前 72 小时主动续期）使用，解码失败返回 0；`decodeJwtSub` 供 WorkBuddy 识别未绑定用户身份的空壳 token（JWT 无 sub 时上游拒绝全部业务接口，续期无效）。Trae / WorkBuddy 主动续期失败时沿用现有 token 继续签到。MiniMax 新版 accessToken 是 `mmoat_` 开头的不透明串（非 JWT），有效期取自 OAuth2 响应的 `expires_in`。
 - **WorkBuddy 域回落**：主域 `www.workbuddy.cn` 被网关拒绝时回落 `copilot.tencent.com` 一次；写请求（签到、领奖、派猫、开盲盒）只在 401/403 或 HTML 网关页时回落，5xx 不回落，避免重复执行。
 - **WorkBuddy 头族**：billing 族 UA 恒为 `axios/1.16.1` 且必带随机 `X-Request-ID`；refresh 端点 X-Refresh-Token 与 Authorization 双发。头族与官方客户端不一致会被网关 401。
 - **WorkBuddy 空壳 token**：JWT 无 `sub` 的 token（授权时身份联合未完成）能过 `/v3/config` 但 `/v2/*` 全 401、refresh 回 12153——签到前用 `decodeJwtSub` 提前拦截并提示重新授权。
-- **MiniMax 签名**：`x-signature` / `yy` 依赖请求参数的精确编码，`pyQuotePlus` 必须与 Python `quote_plus` 一致（非 ASCII 按 UTF-8 字节转义）；`unix` 参数须与签名时间戳相同。
+- **MiniMax 签名**：`x-signature` / `yy` 依赖请求参数的精确编码，`pyQuotePlus` 必须与 Python `quote_plus` 一致（非 ASCII 按 UTF-8 字节转义）；`unix` 参数须与签名时间戳相同。鉴权只认 `Authorization: Bearer mmoat_...`（旧 `token:` 头已废弃），签名本身不依赖鉴权头。
 - **HTML 解析**：XB 用 Workers 内置 `HTMLRewriter`（无 DOM 树），靠 `inDiv` / `inFirstP` / `curA` 标记跟踪嵌套。目标站点是明文 `http://`，列表页抓取失败时返回空列表。
 - **XB 去重时机**：去重集合在钉钉推送**成功后**写入，推送失败则不写入、返回 `FAIL`，下一轮重新抓取并重试；无新线报或 AI 筛选后无内容时无需推送，直接写入。`dry` 模式不写入。AI 两次调用都失败时不筛选，按原列表推送。KV 写入失败只记日志。
 - **免费版限额**：单次调用 50 个子请求（KV 读写也计入），XB 的 `MAX_DETAILS` 据此限制详情页抓取数；单次 10ms CPU（等待网络不计）；账号最多 5 个 Cron Trigger（本项目占 1 个）；KV 每天 100,000 次读取、1,000 次写入（UTC 0 点重置，超出后该类操作报错）。

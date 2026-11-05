@@ -39,8 +39,14 @@
       "TRAE_MACHINE_ID": {
         "description": "Trae 机器 ID（可选）"
       },
+      "MINIMAX_REFRESH_TOKEN": {
+        "description": "MiniMax OAuth2 设备授权长效刷新令牌（--login-minimax 导出；轮换后的值由 Worker 存 KV）"
+      },
+      "MINIMAX_ACCESS_TOKEN": {
+        "description": "MiniMax 短时访问令牌（mmoat_ 开头，可选；正常情况下由 Worker 自行刷新）"
+      },
       "MINIMAX_TOKEN": {
-        "description": "MiniMax 登录令牌"
+        "description": "兼容旧变量：仅当值为 mmoat_ 开头时作为 accessToken 兜底；旧版 JWT 已被上游停用"
       },
       "MINIMAX_USER_ID": {
         "description": "MiniMax 用户 ID"

@@ -21,8 +21,10 @@ export interface Env {
   TRAE_DEVICE_PUB_PEM?: string; // base64(PEM) 单行
   TRAE_MACHINE_ID?: string;
   TRAE_APP_VERSION?: string;
-  // MiniMax Code
-  MINIMAX_TOKEN?: string;
+  // MiniMax Code（OAuth2 设备授权，见 scripts/export-env.mjs --login-minimax）
+  MINIMAX_REFRESH_TOKEN?: string; // 长效凭据：设备授权获得的独立 refresh token（轮换后的值由 Worker 存 KV）
+  MINIMAX_ACCESS_TOKEN?: string; // 可选：直接给短时 accessToken（mmoat_ 开头），一般不用配
+  MINIMAX_TOKEN?: string; // 兼容旧变量：仅当值为 mmoat_ 开头时作为 accessToken 使用；旧版 JWT 已被上游停用
   MINIMAX_USER_ID?: string;
   MINIMAX_UUID?: string;
   MINIMAX_DEVICE_ID?: string;

@@ -9,10 +9,17 @@
 //   node scripts/export-env.mjs --json                   # 以 JSON 输出
 //   node scripts/export-env.mjs --push [--worker 名称]   # 推送到 Cloudflare Secrets
 //   node scripts/export-env.mjs --login-workbuddy        # WorkBuddy 改用浏览器授权登录获取令牌
+//   node scripts/export-env.mjs --login-minimax [--push] # MiniMax 用 OAuth2 设备授权获取独立 refresh token（默认只处理 minimax）
+//   node scripts/export-env.mjs --login-minimax --resume # 中断后续接等待授权（device_code 仍在有效期内）
+//   node scripts/export-env.mjs --login-minimax --minimax-user-id <id>  # 指定签到用用户 ID（也可用 MINIMAX_USER_ID 环境变量或 .dev.vars）
+//
+// MiniMax 新版桌面端（MiniMax Code）已改为 OAuth2 设备授权，旧 minimax-agent-config.json 里不再有 token；
+// --only minimax 会直接提示改用 --login-minimax。设备授权得到的是独立于桌面端会话的 refresh token，
+// Worker 每次运行自行刷新并把轮换后的值写入 KV，不会把桌面端挤下线。
 //
 // --push 时，以下无法从本机读取的变量若已在当前 shell 环境中设置，也会一并推送（优先于本机读取值）：
 //   WB_ACCESS_TOKEN / WB_REFRESH_TOKEN / NOTIFY_PUSH_KEY / API_KEY / API_URL / XB_BOT_TOKEN / XB_BOT_TOKEN_SECRET /
-//   ADMIN_PASSWORD（面板登录密码）
+//   ADMIN_PASSWORD（面板登录密码）/ MINIMAX_USER_ID
 //   例：API_KEY=xxx API_URL=https://... node scripts/export-env.mjs --push
 //
 // 登录态路径覆盖：--workbuddy-info / --trae-storage / --minimax-config <文件路径>
@@ -27,12 +34,12 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // 无法从本机读取、或本机读不到时由 shell 环境变量显式提供的变量（--push 时一并推送，环境变量优先于本机读取值）
-const EXTRA_KEYS = ["WB_ACCESS_TOKEN", "WB_REFRESH_TOKEN", "NOTIFY_PUSH_KEY", "API_KEY", "API_URL", "XB_BOT_TOKEN", "XB_BOT_TOKEN_SECRET", "ADMIN_PASSWORD"];
+const EXTRA_KEYS = ["WB_ACCESS_TOKEN", "WB_REFRESH_TOKEN", "NOTIFY_PUSH_KEY", "API_KEY", "API_URL", "XB_BOT_TOKEN", "XB_BOT_TOKEN_SECRET", "ADMIN_PASSWORD", "MINIMAX_USER_ID"];
 
 // ---- 参数 ----
 
 function parseArgs(argv) {
-  const opts = { only: null, mask: false, json: false, push: false, loginWorkbuddy: false, worker: "", paths: {} };
+  const opts = { only: null, mask: false, json: false, push: false, loginWorkbuddy: false, loginMinimax: false, resume: false, minimaxUserId: "", worker: "", paths: {} };
   const valueOf = (i, name) => {
     if (i + 1 >= argv.length) fail(`${name} 需要一个值`);
     return argv[i + 1];
@@ -43,13 +50,16 @@ function parseArgs(argv) {
     else if (a === "--json") opts.json = true;
     else if (a === "--push") opts.push = true;
     else if (a === "--login-workbuddy") opts.loginWorkbuddy = true;
+    else if (a === "--login-minimax") opts.loginMinimax = true;
+    else if (a === "--resume") opts.resume = true;
+    else if (a === "--minimax-user-id") opts.minimaxUserId = valueOf(i++, a);
     else if (a === "--worker") opts.worker = valueOf(i++, a);
     else if (a === "--only") opts.only = valueOf(i++, a).split(",").map((s) => s.trim().toLowerCase());
     else if (a === "--workbuddy-info") opts.paths.workbuddy = valueOf(i++, a);
     else if (a === "--trae-storage") opts.paths.trae = valueOf(i++, a);
     else if (a === "--minimax-config") opts.paths.minimax = valueOf(i++, a);
     else if (a === "-h" || a === "--help") {
-      console.error(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 20).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      console.error(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 26).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
       process.exit(0);
     } else fail(`未知参数：${a}`);
   }
@@ -324,21 +334,212 @@ function exportTrae(override) {
   return values;
 }
 
-// ---- MiniMax ----
+// ---- MiniMax（OAuth2 设备授权） ----
 
-function exportMinimax(override) {
-  const rel = ["MiniMax Agent", "minimax-agent-config.json"];
-  const file = override || firstExisting(configRoots().map((r) => path.join(r, ...rel)));
-  if (!file) throw new Error("未找到 minimax-agent-config.json，请先登录 MiniMax Agent 桌面端，或用 --minimax-config 指定");
-  const j = readJson(file);
-  const token = (j.tokens?.accessToken || "").trim();
-  if (!token) throw new Error(`${file} 中缺少 tokens.accessToken`);
-  const user = j.user || {};
-  const userId = String(user.realUserID || user.userID || "").trim();
-  if (!userId) throw new Error(`${file} 中缺少 user.realUserID / user.userID`);
-  log(`[minimax] 读取 ${file}；token ${expText(jwtExpMs(token))}`);
-  // 不导出 MINIMAX_UUID / MINIMAX_DEVICE_ID：Worker 内有稳定默认值；Worker 每次运行会先续期 token
-  return { MINIMAX_TOKEN: token, MINIMAX_USER_ID: userId };
+// 桌面端 MiniMax Code 已停用旧 JWT（token: 头 / /v1/api/user/renewal），改为标准 OAuth2 设备授权：
+//   device/code 下发 device_code + 浏览器授权链接 → oauth2/token 轮询换 access/refresh token
+//   → refresh token 每次刷新会轮换，Worker 把新值写回 KV（绝不能复用桌面端自己的 refresh token）
+// 端点与参数逆向自 app.asar 内 mcode-tools 的 contracts.js / oauth-client.js / endpoint-config.js。
+const MM_ACCOUNT_ORIGIN = "https://account.minimax.io"; // 国际版；国内版为 https://account.minimax.cn
+const MM_DEVICE_CODE_URL = `${MM_ACCOUNT_ORIGIN}/oauth2/device/code`;
+const MM_TOKEN_URL = `${MM_ACCOUNT_ORIGIN}/oauth2/token`;
+const MM_CLIENT_ID = "mcode-public";
+const MM_SCOPE = "agent.default";
+const MM_AUDIENCE = "agent-backend";
+const MM_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+const MM_SESSION_FILE = path.join(os.tmpdir(), "cf-cron-panel-minimax-device.json");
+const MM_DEFAULT_UUID = "3548c8fa-9ac2-4a28-8f6b-71ecd88bc048";
+const MM_DEFAULT_DEVICE_ID = "1790426211";
+
+function cleanString(s) {
+  let v = String(s || "").trim();
+  while (v.length >= 2 && v[0] === v[v.length - 1] && (v[0] === "'" || v[0] === '"')) v = v.slice(1, -1).trim();
+  return v;
+}
+
+/** .dev.vars 里取一个已配置的值（仅本地用，不写入仓库、不打印）。 */
+function devVarsValue(key) {
+  const file = path.join(REPO_ROOT, ".dev.vars");
+  if (!fs.existsSync(file)) return "";
+  const line = fs.readFileSync(file, "utf8").split(/\r?\n/).find((l) => l.trim().startsWith(`${key}=`));
+  return line ? cleanString(line.slice(line.indexOf("=") + 1)) : "";
+}
+
+async function mmPostForm(url, values) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(values).toString(),
+  });
+  const text = await res.text().catch(() => "");
+  let body = {};
+  try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 200) }; }
+  return { status: res.status, body };
+}
+
+async function mmStartDevice() {
+  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+  const codeChallenge = crypto.createHash("sha256").update(codeVerifier, "ascii").digest("base64url");
+  const { status, body } = await mmPostForm(MM_DEVICE_CODE_URL, {
+    client_id: MM_CLIENT_ID,
+    scope: MM_SCOPE,
+    audience: MM_AUDIENCE,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+  });
+  const deviceCode = String(body?.device_code || "").trim();
+  const userCode = String(body?.user_code || "").trim();
+  // 上游另有「用 user_code 轮询」的变体（无 device_code 且给 expired_in），按官方客户端逻辑兼容
+  const usesUserCode = !deviceCode && !!userCode && Number(body?.expired_in) > 0;
+  const pollingCode = deviceCode || (usesUserCode ? userCode : "");
+  const verificationUri = String(body?.verification_uri_complete || body?.verification_uri || "").trim();
+  let expiresInSec = Number(body?.expires_in);
+  if (!(expiresInSec > 0)) {
+    expiresInSec = Number(body?.expired_in) > 0
+      ? Math.max(1, Math.floor((Number(body.expired_in) - Date.now()) / 1000)) : 300;
+  }
+  let intervalSec = Number(body?.interval) || 5;
+  if (usesUserCode && Number(body?.interval) > 1000) intervalSec = Number(body.interval) / 1000;
+  if (status >= 400 || !pollingCode || !userCode || !verificationUri) {
+    throw new Error(`获取设备授权失败：HTTP ${status} ${JSON.stringify(body).slice(0, 200)}`);
+  }
+  const session = {
+    version: 1,
+    codeVerifier,
+    pollingParameter: usesUserCode ? "user_code" : "device_code",
+    pollingCode,
+    userCode,
+    verificationUri,
+    expiresAtMs: Date.now() + expiresInSec * 1000,
+    intervalMs: intervalSec * 1000,
+  };
+  // 会话里只有 PKCE verifier 与设备码（没有令牌），中断后可用 --resume 续接
+  fs.writeFileSync(MM_SESSION_FILE, JSON.stringify(session), { mode: 0o600 });
+  return session;
+}
+
+async function mmPoll(session) {
+  let intervalMs = session.intervalMs || 5000;
+  let ticks = 0;
+  while (Date.now() < session.expiresAtMs) {
+    const { status, body } = await mmPostForm(MM_TOKEN_URL, {
+      grant_type: MM_DEVICE_GRANT,
+      [session.pollingParameter]: session.pollingCode,
+      client_id: MM_CLIENT_ID,
+      code_verifier: session.codeVerifier,
+    });
+    const st = String(body?.status || "").toLowerCase();
+    const err = String(body?.error || "").toLowerCase();
+    if (status < 400 && typeof body?.access_token === "string" && body.access_token.trim()) return body;
+    if (st === "pending" || err === "authorization_pending") {
+      if (ticks++ % 10 === 0) log("[minimax] 等待浏览器完成授权…");
+      await sleep(intervalMs);
+      continue;
+    }
+    if (st === "slow_down" || err === "slow_down") {
+      intervalMs += 5000;
+      await sleep(intervalMs);
+      continue;
+    }
+    if (["denied", "access_denied"].includes(st) || err === "access_denied") throw new Error("授权被拒绝");
+    if (["expired", "expired_token"].includes(st) || err === "expired_token") {
+      throw new Error("设备授权已过期，请重新运行 --login-minimax");
+    }
+    throw new Error(`轮询授权结果失败：HTTP ${status} ${JSON.stringify(body).slice(0, 200)}`);
+  }
+  throw new Error("等待授权超时（设备码 5 分钟有效），请重新运行 --login-minimax");
+}
+
+/** 用新 accessToken 打一次签到状态接口，确认 Bearer + 签名链路可用（失败只警告，不影响导出）。 */
+function mmQuotePlus(s) {
+  let out = "";
+  for (const b of Buffer.from(s, "utf8")) {
+    const c = String.fromCharCode(b);
+    if (/[A-Za-z0-9_.\-~]/.test(c)) out += c;
+    else if (b === 0x20) out += "+";
+    else out += "%" + b.toString(16).toUpperCase().padStart(2, "0");
+  }
+  return out;
+}
+const mmMd5 = (s) => crypto.createHash("md5").update(s, "utf8").digest("hex");
+
+async function mmVerify(accessToken, userId) {
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
+  const pathname = "/minimax-cloud/api/v1/signin/status";
+  const params = {
+    device_platform: "web", biz_id: "3", app_id: "3001", version_code: "22201",
+    unix: String(nowMs), timezone_offset: "28800", is_desktop: "1", desktop_version: "",
+    sys_language: "en", lang: "en",
+    uuid: devVarsValue("MINIMAX_UUID") || MM_DEFAULT_UUID,
+    device_id: devVarsValue("MINIMAX_DEVICE_ID") || MM_DEFAULT_DEVICE_ID,
+    os_name: "Windows", browser_name: "Chrome", device_memory: "16", cpu_core_num: "4",
+    browser_language: "zh-CN", browser_platform: "Win32", user_id: userId,
+    op_ticket: "undefined", screen_width: "1536", screen_height: "864", client: "desktop",
+  };
+  const query = Object.entries(params).map(([k, v]) => `${mmQuotePlus(k)}=${mmQuotePlus(v)}`).join("&");
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    yy: mmMd5(encodeURIComponent(`${pathname}?${query}`) + "_" + "{}" + mmMd5(String(nowMs)) + "ooui"),
+    "x-timestamp": String(nowSec),
+    "x-signature": mmMd5(`${nowSec}I*7Cf%WZ#S&%1RlZJ&C2`),
+    origin: "https://agent.minimax.io",
+    referer: "https://agent.minimax.io/",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MiniMaxAgent/desktop Chrome/124.0 Safari/537.36",
+    Accept: "application/json",
+  };
+  try {
+    const res = await fetch(`https://agent.minimax.io${pathname}?${query}`, { headers });
+    const text = await res.text();
+    let j = {};
+    try { j = JSON.parse(text); } catch { /* 非 JSON 响应按失败处理 */ }
+    if (res.status === 200 && (j?.base_resp?.status_code === 0 || j?.data)) return { ok: true };
+    return { ok: false, reason: `HTTP ${res.status} ${text.slice(0, 120)}` };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+async function loginMinimax(opts) {
+  let session;
+  if (opts.resume) {
+    if (!fs.existsSync(MM_SESSION_FILE)) throw new Error("没有可续接的设备授权会话，请先运行 --login-minimax");
+    session = JSON.parse(fs.readFileSync(MM_SESSION_FILE, "utf8"));
+    if (session.expiresAtMs <= Date.now()) throw new Error("上次设备授权已过期，请重新运行 --login-minimax");
+    log(`[minimax] 续接等待授权（用户码 ${session.userCode}）…`);
+  } else {
+    session = await mmStartDevice();
+    log("[minimax] 请在浏览器打开下面的链接并完成登录（5 分钟内有效）：");
+    log(session.verificationUri);
+    log(`[minimax] 用户码：${session.userCode}（链接通常已带上，若页面要求输入请填这个）`);
+  }
+
+  const grant = await mmPoll(session);
+  fs.rmSync(MM_SESSION_FILE, { force: true });
+  const refreshToken = String(grant.refresh_token || "").trim();
+  const accessToken = String(grant.access_token || "").trim();
+  if (!refreshToken) throw new Error("授权响应缺少 refresh_token，Worker 无法长期自续，请重新授权");
+  const expMs = Number(grant.expires_in) > 0 ? Date.now() + Number(grant.expires_in) * 1000 : 0;
+  log(`[minimax] 授权成功；accessToken ${expText(expMs)}；已取得独立 refreshToken（不影响桌面端会话）`);
+
+  const values = { MINIMAX_REFRESH_TOKEN: refreshToken };
+  if (accessToken) values.MINIMAX_ACCESS_TOKEN = accessToken;
+  const userId = cleanString(opts.minimaxUserId || process.env.MINIMAX_USER_ID || devVarsValue("MINIMAX_USER_ID"));
+  if (userId) {
+    values.MINIMAX_USER_ID = userId;
+    const v = await mmVerify(accessToken, userId);
+    log(v.ok
+      ? "[minimax] 签到接口验证通过（Authorization: Bearer 可用）"
+      : `[minimax] 警告：签到接口验证未通过 ${v.reason}；凭据仍已导出，可稍后在面板点「运行」复查`);
+  } else {
+    log("[minimax] 未找到 MINIMAX_USER_ID，跳过签到接口验证；请确认该 Secret 已配置（可用 --minimax-user-id 指定）");
+  }
+  return values;
+}
+
+/** 旧路径已废弃：桌面端配置文件里不再有 token，且共用桌面端 refresh token 会把桌面端挤下线。 */
+function exportMinimax() {
+  throw new Error("MiniMax 已改用 OAuth2 设备授权；请运行 node scripts/export-env.mjs --login-minimax [--push]");
 }
 
 // ---- 输出 / 推送 ----
@@ -374,14 +575,19 @@ function pushSecrets(values, worker) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const targets = opts.only || Object.keys(APPS);
+  if (opts.resume && !opts.loginMinimax) fail("--resume 需与 --login-minimax 一起使用");
+  const targets = opts.only || (opts.loginMinimax ? ["minimax"] : Object.keys(APPS));
   for (const t of targets) if (!APPS[t]) fail(`未知应用：${t}（可选 ${Object.keys(APPS).join(" / ")}）`);
 
   const values = {};
   let okApps = 0;
   for (const t of targets) {
     try {
-      const getter = t === "workbuddy" && opts.loginWorkbuddy ? loginWorkbuddy : () => APPS[t](opts.paths[t]);
+      const getter = t === "workbuddy" && opts.loginWorkbuddy
+        ? loginWorkbuddy
+        : t === "minimax" && opts.loginMinimax
+          ? () => loginMinimax(opts)
+          : () => APPS[t](opts.paths[t]);
       Object.assign(values, await getter());
       okApps++;
     } catch (e) {
