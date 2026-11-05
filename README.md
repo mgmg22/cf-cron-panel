@@ -103,9 +103,12 @@ node scripts/export-env.mjs --json             # JSON 输出
 node scripts/export-env.mjs --push             # 推送到 Cloudflare Secrets（--worker 指定 Worker 名）
 node scripts/export-env.mjs --login-minimax --push   # MiniMax 浏览器设备授权并直接推送 Secrets
 node scripts/export-env.mjs --login-minimax --resume # 授权中断后续接等待（device_code 仍在有效期内）
+node scripts/export-env.mjs --login-workbuddy --push # WorkBuddy 账号 1 浏览器授权并推送
+node scripts/export-env.mjs --login-workbuddy --wb2 --only workbuddy --push  # 账号 2 授权，导出 WB2_*
 ```
 
-- `--push` 时，shell 环境里已设置的 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `NOTIFY_PUSH_KEY` / `API_KEY` / `API_URL` / `XB_BOT_TOKEN` / `XB_BOT_TOKEN_SECRET` / `ADMIN_PASSWORD` / `MINIMAX_USER_ID` 会一并推送，且优先于本机读取值：`API_KEY=... API_URL=... node scripts/export-env.mjs --push`。
+- **WorkBuddy 双账号**：账号 2 单独跑一次 `--login-workbuddy --wb2 --only workbuddy --push`，输出键自动映射为 `WB2_ACCESS_TOKEN` / `WB2_USER_ID` / `WB2_REFRESH_TOKEN` / `WB2_DOMAIN`。授权链接会沿用浏览器当前登录态，**必须先用无痕窗口或退出账号 1 后登录账号 2**；脚本会比对 `.dev.vars` 里账号 1 的 `WB_USER_ID`，若拿到的 uid 相同则直接报错、不写入也不推送。`--wb2 --push` 只推本次产出的 `WB2_*`，不会顺带覆盖账号 1 的 Secret 或 shell 环境变量。
+- `--push` 时，shell 环境里已设置的 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `NOTIFY_PUSH_KEY` / `API_KEY` / `API_URL` / `XB_BOT_TOKEN` / `XB_BOT_TOKEN_SECRET` / `ADMIN_PASSWORD` / `MINIMAX_USER_ID` 会一并推送，且优先于本机读取值：`API_KEY=... API_URL=... node scripts/export-env.mjs --push`（`--wb2` 时跳过这条逻辑）。
 - WorkBuddy 桌面端把 `accessToken` 加密存储（`{ $wbEncrypted, envelope }`，密钥不在该文件内），脚本无法从文件读取，只导出 `WB_USER_ID` / `WB_DOMAIN`。需要令牌时用 `--login-workbuddy`：脚本向设备授权端点（`copilot.tencent.com`，授权专用，与 Worker 的业务主域无关）申请授权，打印授权链接，在浏览器登录后自动轮询换取 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `WB_USER_ID` / `WB_DOMAIN`（5 分钟内有效）；也可手动设置环境变量后 `--push`。`--push` 时 access / refresh token 需一起推送。注意：授权完成后应检查 token 的 JWT `sub` 是否存在——无 `sub` 的空壳 token 无法调用业务接口，需在官方客户端登录一次该账号后重新授权。
 - **MiniMax 设备授权**（新版桌面端 MiniMax Code 已弃用旧 JWT）：`--login-minimax` 用官方 OAuth2 端点（`account.minimax.io/oauth2/device/code` → `/oauth2/token`，client_id `mcode-public`、scope `agent.default`、audience `agent-backend`、PKCE S256）申请设备码并打印授权链接；浏览器登录同一账号后自动换取**独立**的 `refresh_token`，与桌面端会话互不干扰。Worker 每次运行先用它刷新 accessToken、把**轮换后**的 refresh token 写回 KV，再以 `Authorization: Bearer mmoat_...` 调签到接口。`MINIMAX_USER_ID` 须与授权账号一致（脚本从 `--minimax-user-id`、环境变量或 `.dev.vars` 读取，并做一次签到接口验证）。授权中断可用 `--resume` 续接，设备码 5 分钟内有效。
   - **不要把桌面端 `~/.minimax/auth/prod/en/mcode-public/auth.json` 里的 refresh token 直接给 Worker**：两端共用同一 rt，轮换时的重用检测会把桌面端挤下线。

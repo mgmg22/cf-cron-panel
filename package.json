@@ -18,6 +18,18 @@
       "WB_DOMAIN": {
         "description": "WorkBuddy 产品域（可选，成长中心按产品路由）"
       },
+      "WB2_ACCESS_TOKEN": {
+        "description": "WorkBuddy 账号 2 访问令牌（可选）"
+      },
+      "WB2_REFRESH_TOKEN": {
+        "description": "WorkBuddy 账号 2 刷新令牌（可选）"
+      },
+      "WB2_USER_ID": {
+        "description": "WorkBuddy 账号 2 用户 ID（配置后启用双账号签到）"
+      },
+      "WB2_DOMAIN": {
+        "description": "WorkBuddy 账号 2 产品域（可选）"
+      },
       "TRAE_TOKEN": {
         "description": "Trae 登录令牌（可选，留空则用刷新 token 登录）"
       },

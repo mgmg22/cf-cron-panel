@@ -9,6 +9,7 @@
 //   node scripts/export-env.mjs --json                   # 以 JSON 输出
 //   node scripts/export-env.mjs --push [--worker 名称]   # 推送到 Cloudflare Secrets
 //   node scripts/export-env.mjs --login-workbuddy        # WorkBuddy 改用浏览器授权登录获取令牌
+//   node scripts/export-env.mjs --login-workbuddy --wb2 --only workbuddy --push  # 给账号 2 授权并导出 WB2_*
 //   node scripts/export-env.mjs --login-minimax [--push] # MiniMax 用 OAuth2 设备授权获取独立 refresh token（默认只处理 minimax）
 //   node scripts/export-env.mjs --login-minimax --resume # 中断后续接等待授权（device_code 仍在有效期内）
 //   node scripts/export-env.mjs --login-minimax --minimax-user-id <id>  # 指定签到用用户 ID（也可用 MINIMAX_USER_ID 环境变量或 .dev.vars）
@@ -16,6 +17,11 @@
 // MiniMax 新版桌面端（MiniMax Code）已改为 OAuth2 设备授权，旧 minimax-agent-config.json 里不再有 token；
 // --only minimax 会直接提示改用 --login-minimax。设备授权得到的是独立于桌面端会话的 refresh token，
 // Worker 每次运行自行刷新并把轮换后的值写入 KV，不会把桌面端挤下线。
+//
+// WorkBuddy 支持双账号：账号 1 用 WB_*，账号 2 用 WB2_*（不配 WB2_* 则只跑账号 1）。
+// --wb2 把 WorkBuddy 的输出键整体映射为 WB2_*，用于给账号 2 单独授权；授权时浏览器必须处于
+// 账号 2 的登录态（建议开无痕窗口），若取到的 uid 与 .dev.vars 里账号 1 相同会直接报错。
+// --wb2 --push 只推送本次产出的 WB2_*，不会顺带覆盖账号 1 或其他 shell 环境变量。
 //
 // --push 时，以下无法从本机读取的变量若已在当前 shell 环境中设置，也会一并推送（优先于本机读取值）：
 //   WB_ACCESS_TOKEN / WB_REFRESH_TOKEN / NOTIFY_PUSH_KEY / API_KEY / API_URL / XB_BOT_TOKEN / XB_BOT_TOKEN_SECRET /
@@ -39,7 +45,7 @@ const EXTRA_KEYS = ["WB_ACCESS_TOKEN", "WB_REFRESH_TOKEN", "NOTIFY_PUSH_KEY", "A
 // ---- 参数 ----
 
 function parseArgs(argv) {
-  const opts = { only: null, mask: false, json: false, push: false, loginWorkbuddy: false, loginMinimax: false, resume: false, minimaxUserId: "", worker: "", paths: {} };
+  const opts = { only: null, mask: false, json: false, push: false, loginWorkbuddy: false, loginMinimax: false, workbuddySlot2: false, resume: false, minimaxUserId: "", worker: "", paths: {} };
   const valueOf = (i, name) => {
     if (i + 1 >= argv.length) fail(`${name} 需要一个值`);
     return argv[i + 1];
@@ -50,6 +56,7 @@ function parseArgs(argv) {
     else if (a === "--json") opts.json = true;
     else if (a === "--push") opts.push = true;
     else if (a === "--login-workbuddy") opts.loginWorkbuddy = true;
+    else if (a === "--wb2") opts.workbuddySlot2 = true;
     else if (a === "--login-minimax") opts.loginMinimax = true;
     else if (a === "--resume") opts.resume = true;
     else if (a === "--minimax-user-id") opts.minimaxUserId = valueOf(i++, a);
@@ -59,7 +66,7 @@ function parseArgs(argv) {
     else if (a === "--trae-storage") opts.paths.trae = valueOf(i++, a);
     else if (a === "--minimax-config") opts.paths.minimax = valueOf(i++, a);
     else if (a === "-h" || a === "--help") {
-      console.error(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 26).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      console.error(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 32).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
       process.exit(0);
     } else fail(`未知参数：${a}`);
   }
@@ -578,6 +585,7 @@ async function main() {
   if (opts.resume && !opts.loginMinimax) fail("--resume 需与 --login-minimax 一起使用");
   const targets = opts.only || (opts.loginMinimax ? ["minimax"] : Object.keys(APPS));
   for (const t of targets) if (!APPS[t]) fail(`未知应用：${t}（可选 ${Object.keys(APPS).join(" / ")}）`);
+  if (opts.workbuddySlot2 && !targets.includes("workbuddy")) fail("--wb2 需与 workbuddy 一起使用（建议加 --only workbuddy）");
 
   const values = {};
   let okApps = 0;
@@ -588,7 +596,15 @@ async function main() {
         : t === "minimax" && opts.loginMinimax
           ? () => loginMinimax(opts)
           : () => APPS[t](opts.paths[t]);
-      Object.assign(values, await getter());
+      let got = await getter();
+      if (t === "workbuddy" && opts.workbuddySlot2) {
+        got = Object.fromEntries(Object.entries(got).map(([k, v]) => [k.replace(/^WB_/, "WB2_"), v]));
+        const uid1 = devVarsValue("WB_USER_ID");
+        if (uid1 && got.WB2_USER_ID === uid1) {
+          fail("拿到的 uid 与账号 1 相同；请在无痕窗口（或退出账号 1 后）用账号 2 重新授权，本次结果未写入");
+        }
+      }
+      Object.assign(values, got);
       okApps++;
     } catch (e) {
       log(`[${t}] 跳过：${e.message}`);
@@ -602,7 +618,8 @@ async function main() {
   for (const k of Object.keys(values)) if (!values[k]) delete values[k];
 
   if (opts.push) {
-    for (const k of EXTRA_KEYS) if (process.env[k]) values[k] = process.env[k];
+    // --wb2 只推本次授权产出的 WB2_*，避免 shell 里账号 1 的 WB_* 或其他变量被顺带覆盖
+    if (!opts.workbuddySlot2) for (const k of EXTRA_KEYS) if (process.env[k]) values[k] = process.env[k];
     const failed = pushSecrets(values, opts.worker);
     process.exit(failed ? 1 : 0);
   }
