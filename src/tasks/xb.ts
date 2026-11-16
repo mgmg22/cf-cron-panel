@@ -7,7 +7,8 @@
 /// 详情页正文只再用 commonBlackList 检查一次。改词表时注意白名单词不要包含黑名单词。
 
 import type { CheckinResult, Env } from "../types";
-import { notifyDingding } from "../lib/notify";
+import { fetchWithTimeout } from "../lib/http";
+import { buildXbMarkdown, pushXb } from "./xb-push";
 import { kvReadJson, kvWriteJson } from "../lib/kv";
 
 const SITE = "http://www.0818tuan.com";
@@ -136,7 +137,7 @@ interface ListItem {
 async function fetchListItems(): Promise<ListItem[]> {
   let res: Response;
   try {
-    res = await fetch(LIST_URL, { headers: { "user-agent": UA } });
+    res = await fetchWithTimeout(LIST_URL, { headers: { "user-agent": UA } }, 15000);
     if (!res.ok || !res.body) {
       console.warn(`[xb] 列表页 HTTP ${res.status}`);
       return [];
@@ -247,17 +248,12 @@ async function parseDetailHtml(html: string): Promise<DetailResult | null> {
 }
 
 async function fetchDetail(href: string): Promise<DetailResult | null> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
   try {
-    const res = await fetch(href, { headers: { "user-agent": UA }, signal: ctrl.signal });
+    const res = await fetchWithTimeout(href, { headers: { "user-agent": UA } }, 15000);
     if (!res.ok) return null;
-    const html = await res.text();
-    return parseDetailHtml(html);
+    return await parseDetailHtml(await res.text());
   } catch {
     return null;
-  } finally {
-    clearTimeout(t);
   }
 }
 
@@ -337,11 +333,11 @@ ${JSON.stringify(items)}`;
   }
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const res = await fetch(env.API_URL, {
+      const res = await fetchWithTimeout(env.API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.API_KEY}` },
         body: JSON.stringify({ model: AI_MODEL, messages: [{ role: "user", content: prompt }] }),
-      });
+      }, 60000);
       if (!res.ok) throw new Error(`HTTP ${res.status} - ${(await res.text()).slice(0, 200)}`);
       const data: any = await res.json();
       const content = data?.choices?.[0]?.message?.content;
@@ -474,11 +470,7 @@ export async function run(env: Env, opts?: { dry?: boolean }): Promise<CheckinRe
     await persistSeen();
     return { flag: "ALREADY_TODAY", content: `ℹ️ 本轮线报 ${xbList.length} 条，AI 筛选后无内容，未推送` };
   }
-  let markdown = "";
-  for (const it of scored) {
-    markdown += `\n##### 📌[${it.title}🌟${it.score}](${it.href})\n${it.text}\n`;
-    for (const img of it.src_list || []) markdown += `![](${img})`;
-  }
+  const markdown = buildXbMarkdown(scored);
 
   if (opts?.dry) {
     return {
@@ -488,7 +480,7 @@ export async function run(env: Env, opts?: { dry?: boolean }): Promise<CheckinRe
   }
 
   const summary = scored[0]?.title || "线报0818";
-  const sent = await notifyDingding(summary, markdown, env.XB_BOT_TOKEN, env.XB_BOT_TOKEN_SECRET);
+  const sent = await pushXb(env, summary, markdown);
   if (!sent) {
     // 不落去重集合：下一轮会重新抓取并重试推送
     return { flag: "FAIL", content: `⚠️ 本轮线报 ${xbList.length} 条，钉钉推送失败，未记录去重，下轮将重试` };

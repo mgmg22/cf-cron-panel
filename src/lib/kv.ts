@@ -27,3 +27,28 @@ export async function kvWriteJson(kv: KVNamespace | undefined, key: string, valu
     return String(e?.message || e);
   }
 }
+
+const LOCK_TTL_SECONDS = 120; // KV expirationTtl 最小 60；覆盖任务最长耗时，进程异常退出时锁自动过期
+
+/** 尽力而为的互斥锁（KV 非原子，极小概率两方同时拿到）。
+ *  返回 true 表示拿到锁（或未绑定 KV / KV 异常时放行，不因锁故障阻塞任务）；false 表示已被占用。 */
+export async function acquireLock(kv: KVNamespace | undefined, key: string): Promise<boolean> {
+  if (!kv) return true;
+  try {
+    if (await kv.get(key)) return false;
+    await kv.put(key, String(Date.now()), { expirationTtl: LOCK_TTL_SECONDS });
+    return true;
+  } catch (e) {
+    console.warn(`[kv] 加锁 ${key} 失败，放行:`, e);
+    return true;
+  }
+}
+
+export async function releaseLock(kv: KVNamespace | undefined, key: string): Promise<void> {
+  if (!kv) return;
+  try {
+    await kv.delete(key);
+  } catch (e) {
+    console.warn(`[kv] 释放锁 ${key} 失败（将在 TTL 后自动过期）:`, e);
+  }
+}

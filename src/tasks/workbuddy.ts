@@ -105,11 +105,9 @@ async function wbCall(
   path: string,
   method: "GET" | "POST" = "POST",
   payload?: any,
-  domain = "",
 ): Promise<[number, any]> {
   const headers = baseHeaders(token, uid);
-  // 出站 X-Domain 头：显式 WB_DOMAIN 时以配置为准，默认主域
-  headers["X-Domain"] = domain || "www.workbuddy.cn";
+  headers["X-Domain"] = "www.workbuddy.cn";
   const [sc, sb] = await requestJson(API_BASE + path, method, headers, payload ?? {});
   if (!token || !uid) return [sc, sb];
   // 网关层拒绝（openresty HTML 页无业务信封）或上游 5xx：换备选域重试一次
@@ -127,8 +125,8 @@ async function wbCall(
   return [sc, sb];
 }
 
-async function fetchBalance(token: string, uid: string, domain: string): Promise<string> {
-  const [sc, sb] = await wbCall(token, uid, RESOURCE_SUMMARY_PATH, "POST", {}, domain);
+async function fetchBalance(token: string, uid: string): Promise<string> {
+  const [sc, sb] = await wbCall(token, uid, RESOURCE_SUMMARY_PATH, "POST", {});
   if (sc !== 0 && typeof sb === "object" && (sb as any).code === 0) {
     const pkgs = (sb as any).data?.Packages;
     if (Array.isArray(pkgs)) {
@@ -147,9 +145,8 @@ async function fetchBalance(token: string, uid: string, domain: string): Promise
 async function fetchCheckinActivity(
   token: string,
   uid: string,
-  domain: string,
 ): Promise<{ active: boolean; todayCheckedIn: boolean; streakDays: number; endTime: string } | null> {
-  const [sc, sb] = await wbCall(token, uid, CHECKIN_ACTIVITY_STATUS_PATH, "POST", {}, domain);
+  const [sc, sb] = await wbCall(token, uid, CHECKIN_ACTIVITY_STATUS_PATH, "POST", {});
   if (!ok2xx(sc, sb)) return null;
   const d = unwrap(sb);
   if (!d || typeof d !== "object" || typeof d.active !== "boolean") return null;
@@ -183,13 +180,13 @@ async function withBillingRetry(fn: () => Promise<[number, any]>): Promise<[numb
   }
 }
 
-async function checkinOnce(token: string, uid: string, domain: string): Promise<CheckinResult> {
+async function checkinOnce(token: string, uid: string): Promise<CheckinResult> {
   // 先查活动状态（只读）：官方客户端已签时省一次写调用。查询失败 fail-open 照常签到
   // （today_checked_in 偶发不准的风险由下方签到幂等判据兜底，不会漏签）。
-  const act = await fetchCheckinActivity(token, uid, domain).catch(() => null);
+  const act = await fetchCheckinActivity(token, uid).catch(() => null);
   if (act && act.active && act.todayCheckedIn) {
     let content = `ℹ️ 今日已签到，无需重复领取（连登 ${act.streakDays} 天${act.endTime ? `，活动至 ${act.endTime}` : ""}）`;
-    const bal = await fetchBalance(token, uid, domain);
+    const bal = await fetchBalance(token, uid);
     if (bal) content += `\n${bal}`;
     return { flag: "ALREADY_TODAY", content };
   }
@@ -204,14 +201,14 @@ async function checkinOnce(token: string, uid: string, domain: string): Promise<
     if (code === 0) {
       const d = (cb as any).data || {};
       let content = `✅ 领取成功\n- 本次积分：${d.credit}\n- 连续签到：第 ${d.streak_days} 天`;
-      const bal = await fetchBalance(token, uid, domain);
+      const bal = await fetchBalance(token, uid);
       if (bal) content += `\n${bal}`;
       return { flag: "SUCCESS", content };
     }
     // code 10001 与"已签到"文案都视为幂等成功（上游两形态都出现过）
     if (code === 10001 || isAlreadyCheckinMsg((cb as any).msg)) {
       let content = "ℹ️ 今日已签到，无需重复领取";
-      const bal = await fetchBalance(token, uid, domain);
+      const bal = await fetchBalance(token, uid);
       if (bal) content += `\n${bal}`;
       return { flag: "ALREADY_TODAY", content };
     }
@@ -225,8 +222,8 @@ async function checkinOnce(token: string, uid: string, domain: string): Promise<
 
 /** 派猫旅行状态机：arrived→领奖；idle→派出发；traveling→跳过。
  *  动作由服务端状态驱动，天然幂等，重复运行不会重复领/派。 */
-async function buddyTravel(token: string, uid: string, domain: string): Promise<string> {
-  const [sc, sb] = await wbCall(token, uid, TRAVEL_STATUS, "GET", undefined, domain);
+async function buddyTravel(token: string, uid: string): Promise<string> {
+  const [sc, sb] = await wbCall(token, uid, TRAVEL_STATUS, "GET", undefined);
   if (!ok2xx(sc, sb)) return `查询旅行状态失败（HTTP ${sc}）`;
   const data = unwrap(sb);
   let state = data?.state;
@@ -234,7 +231,7 @@ async function buddyTravel(token: string, uid: string, domain: string): Promise<
 
   if (state === "arrived") {
     const recordId = data.record_id;
-    const [cc, cb] = await wbCall(token, uid, TRAVEL_CLAIM, "POST", { record_id: recordId }, domain);
+    const [cc, cb] = await wbCall(token, uid, TRAVEL_CLAIM, "POST", { record_id: recordId });
     if (ok2xx(cc, cb)) {
       const reward = unwrap(cb)?.reward_credit;
       parts.push(reward != null ? `领旅行礼物 +${reward} 积分` : "领旅行礼物成功");
@@ -249,11 +246,11 @@ async function buddyTravel(token: string, uid: string, domain: string): Promise<
     if (data?.daily_limit_reached) {
       parts.push("今日派猫额度已用完");
     } else {
-      const [cc, cb] = await wbCall(token, uid, TRAVEL_CONFIG, "GET", undefined, domain);
+      const [cc, cb] = await wbCall(token, uid, TRAVEL_CONFIG, "GET", undefined);
       const locs = ok2xx(cc, cb) ? unwrap(cb)?.locations : null;
       if (Array.isArray(locs) && locs.length) {
         const loc = locs[0];
-        const [dc, db] = await wbCall(token, uid, TRAVEL_DEPART, "POST", { location_id: loc.id }, domain);
+        const [dc, db] = await wbCall(token, uid, TRAVEL_DEPART, "POST", { location_id: loc.id });
         if (ok2xx(dc, db)) {
           const locName = unwrap(db)?.location?.name || "?";
           parts.push(`派 Buddy 去${locName}`);
@@ -272,14 +269,14 @@ async function buddyTravel(token: string, uid: string, domain: string): Promise<
 }
 
 /** 开盲盒：先查能量余额，余额 >= 10 才开启一次，能量不足不开启。 */
-async function openBlindbox(token: string, uid: string, domain: string): Promise<string> {
-  const [es, eb] = await wbCall(token, uid, ENERGY, "GET", undefined, domain);
+async function openBlindbox(token: string, uid: string): Promise<string> {
+  const [es, eb] = await wbCall(token, uid, ENERGY, "GET", undefined);
   if (!ok2xx(es, eb)) return `查询能量失败（HTTP ${es}）`;
   const energy = unwrap(eb)?.balance;
   if (typeof energy !== "number" || energy < BLINDBOX_ENERGY_COST) {
     return `能量不足（当前${energy}/${BLINDBOX_ENERGY_COST}），暂不能开盲盒`;
   }
-  const [oc, ob] = await wbCall(token, uid, BUDDY_OPEN, "POST", {}, domain);
+  const [oc, ob] = await wbCall(token, uid, BUDDY_OPEN, "POST", {});
   if (ok2xx(oc, ob)) {
     const data = unwrap(ob);
     const results = data?.results || [];
@@ -298,11 +295,11 @@ async function openBlindbox(token: string, uid: string, domain: string): Promise
 }
 
 /** 成长中心编排：派猫旅行 + 开盲盒。不含任务领奖。 */
-async function runGrowth(token: string, uid: string, domain: string): Promise<string> {
+async function runGrowth(token: string, uid: string): Promise<string> {
   const parts: string[] = [];
-  const t = await buddyTravel(token, uid, domain);
+  const t = await buddyTravel(token, uid);
   if (t) parts.push(t);
-  const b = await openBlindbox(token, uid, domain);
+  const b = await openBlindbox(token, uid);
   if (b) parts.push(`盲盒：${b}`);
   return parts.length ? parts.join("；") : "成长中心无可执行项";
 }
@@ -382,7 +379,6 @@ interface WbAccount {
   uid: string;
   token: string;
   refresh_token: string;
-  domain: string;
 }
 
 /** 从 env 收集已配置的账号（账号 1 必填，账号 2 可选）。 */
@@ -395,7 +391,6 @@ function collectAccounts(env: Env): WbAccount[] {
       uid: uid1,
       token: env.WB_ACCESS_TOKEN || "",
       refresh_token: env.WB_REFRESH_TOKEN || "",
-      domain: (env.WB_DOMAIN || "").trim(),
     });
   }
   const uid2 = (env.WB2_USER_ID || "").trim();
@@ -405,7 +400,6 @@ function collectAccounts(env: Env): WbAccount[] {
       uid: uid2,
       token: env.WB2_ACCESS_TOKEN || "",
       refresh_token: env.WB2_REFRESH_TOKEN || "",
-      domain: (env.WB2_DOMAIN || "").trim(),
     });
   }
   return accounts;
@@ -441,13 +435,13 @@ async function runOne(env: Env, acc: WbAccount): Promise<CheckinResult> {
     else console.warn(`[workbuddy:${acc.uid}] 主动续期失败，沿用现有 token：${msg}`);
   }
 
-  let result = await checkinOnce(c.token, acc.uid, acc.domain);
+  let result = await checkinOnce(c.token, acc.uid);
   // 鉴权失败：有续期材料时续期一次并重试
   if (result.flag === "TOKEN_EXPIRED" && c.refresh_token) {
     const [ok, msg] = await refreshCred(env, acc.uid, c);
     if (ok) {
       notes.push(msg);
-      result = await checkinOnce(c.token, acc.uid, acc.domain);
+      result = await checkinOnce(c.token, acc.uid);
     } else {
       result = { flag: result.flag, content: `${result.content}｜自动续期失败：${msg}` };
     }
@@ -457,7 +451,7 @@ async function runOne(env: Env, acc: WbAccount): Promise<CheckinResult> {
   // 签到失败（令牌失效/网络异常等）时跳过成长中心；成长中心异常不影响已得到的签到结果
   if (result.flag === "SUCCESS" || result.flag === "ALREADY_TODAY") {
     try {
-      content += `\n${await runGrowth(c.token, acc.uid, acc.domain)}`;
+      content += `\n${await runGrowth(c.token, acc.uid)}`;
     } catch (e: any) {
       console.error(`[workbuddy:${acc.uid}] 成长中心异常:`, e);
       content += `\n成长中心异常：${e?.message || e}`;

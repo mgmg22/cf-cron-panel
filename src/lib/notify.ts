@@ -3,6 +3,7 @@
  *  钉钉加签协议 sign = quote(base64(hmac_sha256(secret, "{ts}\n{secret}")))，无 secret 时直发。 */
 
 import { bytesToBase64 } from "./encoding";
+import { fetchWithTimeout } from "./http";
 
 /** server酱：sctapi.ftqq.com/{key}.send，desp 按 Markdown 渲染，单个 \n 转 \n\n 分段。
  *  未配置 key 返回 true（无需推送）；HTTP 非 2xx 或网络异常返回 false，不抛异常。 */
@@ -17,7 +18,7 @@ export async function notifyServerJ(
     content.replace(/\n/g, "\n\n"),
   )}`;
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
@@ -59,7 +60,7 @@ export async function notifyDingding(
     url += `&timestamp=${ts}&sign=${encodeURIComponent(bytesToBase64(mac))}`;
   }
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: "POST",
       headers: { "Content-Type": "application/json;charset=utf-8" },
       body: JSON.stringify({ msgtype: "markdown", markdown: { title, text: content } }),

@@ -1,6 +1,6 @@
 import type { Env } from "../src/types";
 
-/** 内存版 KVNamespace（仅实现项目用到的 get(json) / put）。 */
+/** 内存版 KVNamespace（仅实现项目用到的 get(json) / put / delete）。 */
 export function fakeKv(initial: Record<string, unknown> = {}, opts: { failGet?: boolean; failPut?: boolean } = {}) {
   const store = new Map<string, string>(Object.entries(initial).map(([k, v]) => [k, JSON.stringify(v)]));
   const kv = {
@@ -12,6 +12,9 @@ export function fakeKv(initial: Record<string, unknown> = {}, opts: { failGet?: 
     put: async (key: string, value: string) => {
       if (opts.failPut) throw new Error("kv put failed");
       store.set(key, value);
+    },
+    delete: async (key: string) => {
+      store.delete(key);
     },
   };
   return { kv: kv as unknown as KVNamespace, store };

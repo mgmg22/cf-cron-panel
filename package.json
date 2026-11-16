@@ -15,9 +15,6 @@
       "WB_USER_ID": {
         "description": "WorkBuddy 用户 ID"
       },
-      "WB_DOMAIN": {
-        "description": "WorkBuddy 产品域（可选，成长中心按产品路由）"
-      },
       "WB2_ACCESS_TOKEN": {
         "description": "WorkBuddy 账号 2 访问令牌（可选）"
       },
@@ -26,9 +23,6 @@
       },
       "WB2_USER_ID": {
         "description": "WorkBuddy 账号 2 用户 ID（配置后启用双账号签到）"
-      },
-      "WB2_DOMAIN": {
-        "description": "WorkBuddy 账号 2 产品域（可选）"
       },
       "TRAE_TOKEN": {
         "description": "Trae 登录令牌（可选，留空则用刷新 token 登录）"
@@ -53,9 +47,6 @@
       },
       "MINIMAX_REFRESH_TOKEN": {
         "description": "MiniMax OAuth2 设备授权长效刷新令牌（--login-minimax 导出；轮换后的值由 Worker 存 KV）"
-      },
-      "MINIMAX_ACCESS_TOKEN": {
-        "description": "MiniMax 短时访问令牌（mmoat_ 开头，可选；正常情况下由 Worker 自行刷新）"
       },
       "MINIMAX_USER_ID": {
         "description": "MiniMax 用户 ID"

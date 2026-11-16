@@ -156,3 +156,27 @@ describe("定时触发的结果在面板可见", () => {
     expect(d.tasks[0].lastRun).toBeNull();
   });
 });
+
+describe("互斥锁", () => {
+  it("任务运行中再次触发直接丢弃：cron 不执行，手动返回 409，不排队", async () => {
+    const { kv, store } = fakeKv({ "lock:a": 1 });
+    const env = envWith(kv);
+    await runDue(env, bj(0, 8));
+    expect(h.calls).not.toContain("a");
+    const r = await handleApi(req("/api/tasks/a/run", { method: "POST", json: {} }), env);
+    expect(r.status).toBe(409);
+    expect(h.calls).not.toContain("a");
+    expect(store.has("run:a")).toBe(false); // 丢弃不覆盖最近结果
+  });
+
+  it("执行结束释放锁；dry 不加锁", async () => {
+    const { kv, store } = fakeKv();
+    const env = envWith(kv);
+    await runTask(env, h.tasks[0], "manual");
+    expect(h.calls).toEqual(["a"]);
+    expect(store.has("lock:a")).toBe(false);
+    store.set("lock:b", "1");
+    await runTask(env, h.tasks[1], "manual", { dry: true });
+    expect(h.calls).toContain("b:dry");
+  });
+});

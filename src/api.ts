@@ -3,7 +3,7 @@
 import type { Env } from "./types";
 import { csrfError } from "./auth";
 import { nextRun, parseCron, validateCron } from "./lib/cron";
-import { loadLastRun, saveConfig, type RunRecord, type TaskConfig } from "./lib/store";
+import { loadLastRun, saveTaskConfig, type RunRecord, type TaskConfig } from "./lib/store";
 import { loadTaskConfig, runTask } from "./scheduler";
 import { getTask, TASKS } from "./tasks/registry";
 
@@ -68,7 +68,7 @@ async function updateTask(request: Request, env: Env, id: string): Promise<Respo
     if (typeof body.enabled !== "boolean") return fail(400, "enabled 须为布尔值");
     next.enabled = body.enabled;
   }
-  const saveErr = await saveConfig(env.CHECKIN_STATE, { ...config, [id]: next });
+  const saveErr = await saveTaskConfig(env.CHECKIN_STATE, id, next);
   if (saveErr) return fail(503, `保存失败：${saveErr}`);
   return json({ id, cron: next.cron, enabled: next.enabled, nextRunAt: nextRunAt(next, new Date()) });
 }
@@ -78,7 +78,8 @@ async function runNow(request: Request, env: Env, id: string): Promise<Response>
   if (!task) return fail(404, "任务不存在");
   const body = await readBody(request);
   const dry = body.dry === true && task.supportsDry;
-  const record: RunRecord = await runTask(env, task, "manual", { dry });
+  const record: RunRecord | null = await runTask(env, task, "manual", { dry });
+  if (!record) return fail(409, "该任务正在运行中，本次请求已丢弃，请稍后再试");
   return json({ id, dry, record });
 }
 
@@ -105,7 +106,7 @@ function status(env: Env): Response {
     { id: "workbuddy", label: "WorkBuddy 账号 1", usedBy: "聚合签到", vars: ["WB_ACCESS_TOKEN", "WB_USER_ID", "WB_REFRESH_TOKEN（可选）"], optional: false, configured: has(env.WB_ACCESS_TOKEN) && has(env.WB_USER_ID), whenMissing: "WorkBuddy 签到返回「未配置凭据」" },
     { id: "workbuddy2", label: "WorkBuddy 账号 2", usedBy: "聚合签到", vars: ["WB2_ACCESS_TOKEN", "WB2_USER_ID", "WB2_REFRESH_TOKEN（可选）"], optional: true, configured: has(env.WB2_ACCESS_TOKEN) && has(env.WB2_USER_ID), whenMissing: "只签到账号 1" },
     { id: "trae", label: "Trae Work", usedBy: "聚合签到", vars: ["TRAE_TOKEN", "TRAE_REFRESH_TOKEN", "TRAE_DEVICE_KEY_PEM", "TRAE_DEVICE_PUB_PEM", "TRAE_DEVICE_ID"], optional: false, configured: has(env.TRAE_TOKEN) || (has(env.TRAE_REFRESH_TOKEN) && has(env.TRAE_DEVICE_KEY_PEM)), whenMissing: "Trae 签到返回「未配置凭据」" },
-    { id: "minimax", label: "MiniMax Code", usedBy: "聚合签到", vars: ["MINIMAX_REFRESH_TOKEN", "MINIMAX_USER_ID", "MINIMAX_ACCESS_TOKEN（可选）"], optional: false, configured: has(env.MINIMAX_REFRESH_TOKEN) && has(env.MINIMAX_USER_ID), whenMissing: "MiniMax 签到返回「未配置凭据」" },
+    { id: "minimax", label: "MiniMax Code", usedBy: "聚合签到", vars: ["MINIMAX_REFRESH_TOKEN", "MINIMAX_USER_ID"], optional: false, configured: has(env.MINIMAX_REFRESH_TOKEN) && has(env.MINIMAX_USER_ID), whenMissing: "MiniMax 签到返回「未配置凭据」" },
     { id: "serverJ", label: "server酱 通知", usedBy: "聚合签到（汇总通知）", vars: ["NOTIFY_PUSH_KEY"], optional: true, configured: has(env.NOTIFY_PUSH_KEY), whenMissing: "不发送签到汇总通知" },
     { id: "xbAi", label: "AI 接口", usedBy: "XB 线报（AI 评分筛选）", vars: ["API_KEY", "API_URL"], optional: true, configured: has(env.API_KEY) && has(env.API_URL), whenMissing: "跳过 AI 筛选，按原列表推送" },
     { id: "xbDingding", label: "钉钉机器人", usedBy: "XB 线报（推送）", vars: ["XB_BOT_TOKEN", "XB_BOT_TOKEN_SECRET（可选，加签）"], optional: false, configured: has(env.XB_BOT_TOKEN), whenMissing: "线报不会推送" },

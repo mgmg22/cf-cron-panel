@@ -21,27 +21,41 @@ export interface RunRecord {
   content: string;
 }
 
-/** 读取任务配置并与默认值合并；error 非空表示 KV 读取失败（此时返回全部默认值）。 */
+const LEGACY_CONFIG_KEY = CONFIG_KEY; // 旧版整体存储在 cfg:tasks，仅作读取回退
+const taskKey = (id: string) => `cfg:task:${id}`; // 每任务独立 key，保存互不覆盖
+
+function sanitize(s: Partial<TaskConfig> | null | undefined, def: TaskConfig): TaskConfig {
+  const cron = typeof s?.cron === "string" && !validateCron(s.cron) ? s.cron.trim() : def.cron;
+  const enabled = typeof s?.enabled === "boolean" ? s.enabled : def.enabled;
+  return { cron, enabled };
+}
+
+/** 读取任务配置并与默认值合并；error 非空表示 KV 读取失败（此时返回全部默认值）。
+ *  并行读取各任务 key；仅当有任务尚无独立 key 时才再读一次旧版 cfg:tasks 作回退。 */
 export async function loadConfig(
   kv: KVNamespace | undefined,
   defaults: Record<string, TaskConfig>,
 ): Promise<{ config: Record<string, TaskConfig>; error: string }> {
-  const r = await kvReadJson<Record<string, Partial<TaskConfig>>>(kv, CONFIG_KEY);
-  const saved = r.value && typeof r.value === "object" ? r.value : {};
-  const config: Record<string, TaskConfig> = {};
-  for (const [id, def] of Object.entries(defaults)) {
-    const s = saved[id];
-    const cron = typeof s?.cron === "string" && !validateCron(s.cron) ? s.cron.trim() : def.cron;
-    const enabled = typeof s?.enabled === "boolean" ? s.enabled : def.enabled;
-    config[id] = { cron, enabled };
+  const ids = Object.keys(defaults);
+  const reads = await Promise.all(ids.map((id) => kvReadJson<Partial<TaskConfig>>(kv, taskKey(id))));
+  let error = reads.map((r) => r.error).find(Boolean) || "";
+  let legacy: Record<string, Partial<TaskConfig>> = {};
+  if (!error && reads.some((r) => !r.value)) {
+    const l = await kvReadJson<Record<string, Partial<TaskConfig>>>(kv, LEGACY_CONFIG_KEY);
+    error = l.error;
+    if (l.value && typeof l.value === "object") legacy = l.value;
   }
-  return { config, error: r.error };
+  const config: Record<string, TaskConfig> = {};
+  ids.forEach((id, i) => {
+    config[id] = sanitize(reads[i].value ?? legacy[id], defaults[id]);
+  });
+  return { config, error };
 }
 
-/** 保存完整任务配置；返回失败原因，成功返回空串。未绑定 KV 视为失败。 */
-export async function saveConfig(kv: KVNamespace | undefined, config: Record<string, TaskConfig>): Promise<string> {
+/** 只保存单个任务的配置（独立 key，并发保存不同任务互不覆盖）；返回失败原因，成功返回空串。 */
+export async function saveTaskConfig(kv: KVNamespace | undefined, id: string, cfg: TaskConfig): Promise<string> {
   if (!kv) return "未绑定 KV（CHECKIN_STATE），无法保存";
-  return kvWriteJson(kv, CONFIG_KEY, config);
+  return kvWriteJson(kv, taskKey(id), cfg);
 }
 
 export async function loadLastRun(kv: KVNamespace | undefined, id: string): Promise<RunRecord | null> {

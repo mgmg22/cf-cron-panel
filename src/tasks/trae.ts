@@ -218,7 +218,7 @@ export async function run(env: Env): Promise<CheckinResult> {
   const appVersion = env.TRAE_APP_VERSION || APP_VERSION;
   const c = readCred(env);
 
-  // 合并 KV 中续期后的滚动凭据；仅当记录基于当前 secret 生成（base 一致）才采用，
+  // 合并 KV 中的滚动凭据；仅当记录基于当前 secret 生成（base 一致）才采用，
   // secret 被重新推送后以 secret 为准
   const kv = await kvReadJson(env.CHECKIN_STATE, STORE_KEY);
   c.kv_error = kv.error;

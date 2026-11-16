@@ -40,7 +40,7 @@
 │  ├─ scheduler.ts        # 任务执行（runTask）与按分钟调度（runDue）
 │  ├─ types.ts            # Env / Flag / CheckinResult 类型
 │  ├─ tasks/              # registry（面板任务清单）/ checkin（聚合）/ workbuddy / trae / minimax / xb
-│  └─ lib/                # http / api / kv / store / cron / crypto / jwt / md5 / notify / encoding
+│  └─ lib/                # http / api / kv / store / cron / crypto / jwt / md5 / minimax-sign / notify / encoding
 ├─ public/                # 面板前端（单页，无构建步骤）
 ├─ test/                  # vitest 单元测试
 └─ scripts/
@@ -73,13 +73,13 @@ npx wrangler secret put ADMIN_PASSWORD
 
 清单与 `src/types.ts` 的 `Env` 一一对应，凭据类变量在类型上均为可选，缺失时对应任务返回 `NO_CREDENTIAL`（XB 缺 `API_URL` / `API_KEY` 时跳过 AI 筛选，按原列表推送）：
 
-- WorkBuddy：`WB_ACCESS_TOKEN` / `WB_USER_ID`（`WB_REFRESH_TOKEN` 可选，配置后自动续期；`WB_DOMAIN` 可选，出站 X-Domain 头，默认 www.workbuddy.cn）。
-  支持第 2 个账号（可选）：`WB2_ACCESS_TOKEN` / `WB2_USER_ID` / `WB2_REFRESH_TOKEN`（可选）/ `WB2_DOMAIN`（可选）。两个账号都会自动签到 + 成长中心，账号间随机间隔 2~6 秒防风控；不配置 WB2_* 则只跑账号 1。
-  续期后的滚动凭据按账号分键存 KV（`workbuddy:<uid>`）。
+- WorkBuddy：`WB_ACCESS_TOKEN` / `WB_USER_ID`（`WB_REFRESH_TOKEN` 可选，配置后自动续期）。
+  支持第 2 个账号（可选）：`WB2_ACCESS_TOKEN` / `WB2_USER_ID` / `WB2_REFRESH_TOKEN`（可选）。两个账号都会自动签到 + 成长中心，账号间随机间隔 2~6 秒防风控；不配置 WB2_* 则只跑账号 1。
+  滚动凭据按账号分键存 KV（`workbuddy:<uid>`）。
 - Trae：`TRAE_TOKEN` / `TRAE_DEVICE_ID` / `TRAE_USER_ID` / `TRAE_REFRESH_TOKEN` /
   `TRAE_DEVICE_KEY_PEM` / `TRAE_DEVICE_PUB_PEM`（base64(PEM) 单行或真 PEM）/ `TRAE_MACHINE_ID`（可选）；
   `TRAE_APP_VERSION` 内置默认 `1.107.1`，可选覆盖
-- MiniMax：`MINIMAX_REFRESH_TOKEN`（浏览器设备授权获得，必需）/ `MINIMAX_USER_ID` / `MINIMAX_UUID`（可选）/ `MINIMAX_DEVICE_ID`（可选）；`MINIMAX_ACCESS_TOKEN` 可选（短时令牌兜底，正常由 Worker 自行刷新）
+- MiniMax：`MINIMAX_REFRESH_TOKEN`（浏览器设备授权获得，必需）/ `MINIMAX_USER_ID` / `MINIMAX_UUID`（可选）/ `MINIMAX_DEVICE_ID`（可选）
 - XB 线报：`API_KEY` / `API_URL`（OpenAI 兼容接口，含 `/chat/completions`）、`XB_BOT_TOKEN` / `XB_BOT_TOKEN_SECRET`（可选，钉钉加签）
 - 通知：`NOTIFY_PUSH_KEY`（server酱）
 - 面板：`ADMIN_PASSWORD`（登录密码，见上一节，必填才能使用面板）
@@ -90,11 +90,11 @@ npx wrangler secret put ADMIN_PASSWORD
 
 | 应用 | 读取的文件 | 导出的变量 |
 | --- | --- | --- |
-| WorkBuddy | `CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info`；或 `--login-workbuddy` 浏览器授权登录 | `WB_USER_ID`、`WB_DOMAIN`、`WB_ACCESS_TOKEN`、`WB_REFRESH_TOKEN`（见下方说明） |
+| WorkBuddy | `CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info`；或 `--login-workbuddy` 浏览器授权登录 | `WB_USER_ID`、`WB_ACCESS_TOKEN`、`WB_REFRESH_TOKEN`（见下方说明） |
 | Trae | `<TRAE SOLO CN 或 Trae CN>/User/globalStorage/storage.json`（解密 `iCubeAuthInfo://` 信封） | `TRAE_TOKEN` / `TRAE_DEVICE_ID` / `TRAE_USER_ID` / `TRAE_REFRESH_TOKEN` / `TRAE_DEVICE_KEY_PEM` / `TRAE_DEVICE_PUB_PEM`（base64 单行）/ `TRAE_MACHINE_ID` |
-| MiniMax | **不读本机文件**，`--login-minimax` 走浏览器设备授权 | `MINIMAX_REFRESH_TOKEN` / `MINIMAX_ACCESS_TOKEN` / `MINIMAX_USER_ID`（用户 ID 取自 `--minimax-user-id`、`MINIMAX_USER_ID` 环境变量或 `.dev.vars`） |
+| MiniMax | **不读本机文件**，`--login-minimax` 走浏览器设备授权 | `MINIMAX_REFRESH_TOKEN` / `MINIMAX_USER_ID`（用户 ID 取自 `--minimax-user-id`、`MINIMAX_USER_ID` 环境变量或 `.dev.vars`） |
 
-文件所在根目录：Windows 为 `%APPDATA%` / `%LOCALAPPDATA%`，macOS 为 `~/Library/Application Support`，Linux 为 `~/.config`；也可用 `--workbuddy-info` / `--trae-storage` 指定文件。`--only minimax` 会提示改用 `--login-minimax` 设备授权。
+文件所在根目录：Windows 为 `%APPDATA%` / `%LOCALAPPDATA%`，macOS 为 `~/Library/Application Support`，Linux 为 `~/.config`；也可用 `--workbuddy-info` / `--trae-storage` 指定文件。MiniMax 使用 `--login-minimax` 完成设备授权。
 
 ```bash
 node scripts/export-env.mjs                    # 打印 KEY=VALUE（诊断信息走 stderr）
@@ -107,10 +107,10 @@ node scripts/export-env.mjs --login-workbuddy --push # WorkBuddy 账号 1 浏览
 node scripts/export-env.mjs --login-workbuddy --wb2 --only workbuddy --push  # 账号 2 授权，导出 WB2_*
 ```
 
-- **WorkBuddy 双账号**：账号 2 单独跑一次 `--login-workbuddy --wb2 --only workbuddy --push`，输出键自动映射为 `WB2_ACCESS_TOKEN` / `WB2_USER_ID` / `WB2_REFRESH_TOKEN` / `WB2_DOMAIN`。授权链接会沿用浏览器当前登录态，**必须先用无痕窗口或退出账号 1 后登录账号 2**；脚本会比对 `.dev.vars` 里账号 1 的 `WB_USER_ID`，若拿到的 uid 相同则直接报错、不写入也不推送。`--wb2 --push` 只推本次产出的 `WB2_*`，不会顺带覆盖账号 1 的 Secret 或 shell 环境变量。
+- **WorkBuddy 双账号**：账号 2 单独跑一次 `--login-workbuddy --wb2 --only workbuddy --push`，输出键自动映射为 `WB2_ACCESS_TOKEN` / `WB2_USER_ID` / `WB2_REFRESH_TOKEN`。授权链接会沿用浏览器当前登录态，**必须先用无痕窗口或退出账号 1 后登录账号 2**；脚本会比对 `.dev.vars` 里账号 1 的 `WB_USER_ID`，若拿到的 uid 相同则直接报错、不写入也不推送。`--wb2 --push` 只推本次产出的 `WB2_*`，不会顺带覆盖账号 1 的 Secret 或 shell 环境变量。
 - `--push` 时，shell 环境里已设置的 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `NOTIFY_PUSH_KEY` / `API_KEY` / `API_URL` / `XB_BOT_TOKEN` / `XB_BOT_TOKEN_SECRET` / `ADMIN_PASSWORD` / `MINIMAX_USER_ID` 会一并推送，且优先于本机读取值：`API_KEY=... API_URL=... node scripts/export-env.mjs --push`（`--wb2` 时跳过这条逻辑）。
-- WorkBuddy 桌面端把 `accessToken` 加密存储（`{ $wbEncrypted, envelope }`，密钥不在该文件内），脚本无法从文件读取，只导出 `WB_USER_ID` / `WB_DOMAIN`。需要令牌时用 `--login-workbuddy`：脚本向设备授权端点（`copilot.tencent.com`，授权专用，与 Worker 的业务主域无关）申请授权，打印授权链接，在浏览器登录后自动轮询换取 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `WB_USER_ID` / `WB_DOMAIN`（5 分钟内有效）；也可手动设置环境变量后 `--push`。`--push` 时 access / refresh token 需一起推送。注意：授权完成后应检查 token 的 JWT `sub` 是否存在——无 `sub` 的空壳 token 无法调用业务接口，需在官方客户端登录一次该账号后重新授权。
-- **MiniMax 设备授权**：`--login-minimax` 用官方 OAuth2 端点（`account.minimax.io/oauth2/device/code` → `/oauth2/token`，client_id `mcode-public`、scope `agent.default`、audience `agent-backend`、PKCE S256）申请设备码并打印授权链接；浏览器登录同一账号后自动换取**独立**的 `refresh_token`，与桌面端会话互不干扰。Worker 每次运行先用它刷新 accessToken、把**轮换后**的 refresh token 写回 KV，再以 `Authorization: Bearer mmoat_...` 调签到接口。`MINIMAX_USER_ID` 须与授权账号一致（脚本从 `--minimax-user-id`、环境变量或 `.dev.vars` 读取，并做一次签到接口验证）。授权中断可用 `--resume` 续接，设备码 5 分钟内有效。
+- WorkBuddy 桌面端把 `accessToken` 加密存储（`{ $wbEncrypted, envelope }`，密钥不在该文件内），脚本无法从文件读取，只导出 `WB_USER_ID`。需要令牌时用 `--login-workbuddy`：脚本向设备授权端点（`copilot.tencent.com`，授权专用，与 Worker 的业务主域无关）申请授权，打印授权链接，在浏览器登录后自动轮询换取 `WB_ACCESS_TOKEN` / `WB_REFRESH_TOKEN` / `WB_USER_ID`（5 分钟内有效）；也可手动设置环境变量后 `--push`。`--push` 时 access / refresh token 需一起推送。注意：授权完成后应检查 token 的 JWT `sub` 是否存在——无 `sub` 的空壳 token 无法调用业务接口，需在官方客户端登录一次该账号后重新授权。
+- **MiniMax 设备授权**：`--login-minimax` 使用官方 OAuth2 端点（`account.minimax.io/oauth2/device/code` → `/oauth2/token`，client_id `mcode-public`、scope `agent.default`、audience `agent-backend`、PKCE S256）申请设备码并打印授权链接；浏览器登录同一账号后自动换取独立的 `refresh_token`。Worker 优先复用 KV 中仍有效的 accessToken，过期或缺失时使用 refresh token 换取新 token，并将轮换后的 refresh token 写回 KV；签到请求使用 `Authorization: Bearer mmoat_...`。`MINIMAX_USER_ID` 须与授权账号一致（脚本从 `--minimax-user-id`、环境变量或 `.dev.vars` 读取，并做一次签到接口验证）。授权中断可用 `--resume` 续接，设备码 5 分钟内有效。
   - **不要把桌面端 `~/.minimax/auth/prod/en/mcode-public/auth.json` 里的 refresh token 直接给 Worker**：两端共用同一 rt，轮换时的重用检测会把桌面端挤下线。
 - 某个应用读取失败只会跳过该应用，不影响其他应用；全部失败时退出码为 1。
 - 导出内容含访问令牌和设备私钥，不要写入仓库或日志。
@@ -119,8 +119,8 @@ node scripts/export-env.mjs --login-workbuddy --wb2 --only workbuddy --push  # �
 
 | 键 | 内容 | 用途 |
 | --- | --- | --- |
-| `trae` | `{token, refresh_token, expires_ms, refresh_expires_ms, base, updated_at}` | Trae 续期后的滚动凭据；`base` 为生成记录时的 `TRAE_TOKEN` |
-| `workbuddy:<uid>` | `{token, refresh_token, expires_ms, base, updated_at}` | WorkBuddy 续期后的滚动凭据（多账号按 uid 分键）；`base` 为生成记录时的 `WB_ACCESS_TOKEN`，secret 被重新推送（值变化）后该记录作废 |
+| `trae` | `{token, refresh_token, expires_ms, refresh_expires_ms, base, updated_at}` | Trae 的滚动凭据；`base` 为生成记录时的 `TRAE_TOKEN` |
+| `workbuddy:<uid>` | `{token, refresh_token, expires_ms, base, updated_at}` | WorkBuddy 的滚动凭据（多账号按 uid 分键）；`base` 为生成记录时的 `WB_ACCESS_TOKEN`，secret 被重新推送（值变化）后该记录作废 |
 | `minimax` | `{accessToken, refreshToken, expiresAtMs, updated_at}` | MiniMax OAuth2 滚动凭据；缺少 `refreshToken` 的记录视为无效 |
 | `cfg:tasks` | `{checkin: {cron, enabled}, xb: {cron, enabled}}` | 面板保存的任务配置；缺失或字段非法的项回退默认值 |
 | `run:<id>` | `{trigger, startedAt, flag, content}` | 任务最近一次运行结果（`content` 最多保留 8000 字符），每次运行覆盖 |
@@ -199,7 +199,7 @@ node scripts/export-env.mjs --push
 - **WorkBuddy 域回落**：主域 `www.workbuddy.cn` 被网关拒绝时回落 `copilot.tencent.com` 一次；写请求（签到、领奖、派猫、开盲盒）只在 401/403 或 HTML 网关页时回落，5xx 不回落，避免重复执行。
 - **WorkBuddy 头族**：billing 族 UA 恒为 `axios/1.16.1` 且必带随机 `X-Request-ID`；refresh 端点 X-Refresh-Token 与 Authorization 双发。头族与官方客户端不一致会被网关 401。
 - **WorkBuddy 空壳 token**：JWT 无 `sub` 的 token（授权时身份联合未完成）能过 `/v3/config` 但 `/v2/*` 全 401、refresh 回 12153——签到前用 `decodeJwtSub` 提前拦截并提示重新授权。
-- **MiniMax 签名**：`x-signature` / `yy` 依赖请求参数的精确编码，`pyQuotePlus` 必须与 Python `quote_plus` 一致（非 ASCII 按 UTF-8 字节转义）；`unix` 参数须与签名时间戳相同。鉴权只认 `Authorization: Bearer mmoat_...`；签名本身不依赖鉴权头。
+- **MiniMax 签名**：实现在 `lib/minimax-sign.mjs`（Worker 与 `scripts/export-env.mjs` 共用，MD5 由调用方注入，改动只改这一处）。`x-signature` / `yy` 依赖请求参数的精确编码，`pyQuotePlus` 必须与 Python `quote_plus` 一致（非 ASCII 按 UTF-8 字节转义）；`unix` 参数须与签名时间戳相同。鉴权只认 `Authorization: Bearer mmoat_...`；签名本身不依赖鉴权头。
 - **HTML 解析**：XB 用 Workers 内置 `HTMLRewriter`（无 DOM 树），靠 `inDiv` / `inFirstP` / `curA` 标记跟踪嵌套。目标站点是明文 `http://`，列表页抓取失败时返回空列表。
 - **XB 去重时机**：去重集合在钉钉推送**成功后**写入，推送失败则不写入、返回 `FAIL`，下一轮重新抓取并重试；无新线报或 AI 筛选后无内容时无需推送，直接写入。`dry` 模式不写入。AI 两次调用都失败时不筛选，按原列表推送。KV 写入失败只记日志。
 - **免费版限额**：单次调用 50 个子请求（KV 读写也计入），XB 的 `MAX_DETAILS` 据此限制详情页抓取数；单次 10ms CPU（等待网络不计）；账号最多 5 个 Cron Trigger（本项目占 1 个）；KV 每天 100,000 次读取、1,000 次写入（UTC 0 点重置，超出后该类操作报错）。

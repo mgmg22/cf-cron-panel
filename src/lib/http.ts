@@ -10,6 +10,18 @@ export function postJson(
   return requestJson(url, "POST", { "Content-Type": "application/json", ...headers }, body, timeoutMs);
 }
 
+/** 带超时的 fetch（默认 15s）：超时中止请求并抛 AbortError；调用方自行处理异常。 */
+export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    // 超时只覆盖到响应头；调用方读 body 前 timer 已清除，body 读取不受限（响应体都很小）
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /** 通用请求：body 为字符串时原样发送，否则 JSON 序列化；GET 不带 body。超时（默认 15s）会中止请求。 */
 export async function requestJson(
   url: string,
@@ -18,23 +30,15 @@ export async function requestJson(
   body?: unknown,
   timeoutMs = 15000,
 ): Promise<[number, any]> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const init: RequestInit = {
-      method: method.toUpperCase(),
-      headers,
-      signal: ctrl.signal,
-    };
-    if (body !== undefined && method.toUpperCase() !== "GET") {
+    const init: RequestInit = { method: method.toUpperCase(), headers };
+    if (body !== undefined && init.method !== "GET") {
       init.body = typeof body === "string" ? body : JSON.stringify(body);
     }
-    const res = await fetch(url, init);
+    const res = await fetchWithTimeout(url, init, timeoutMs);
     return [res.status, await parseBody(res)];
   } catch (e: any) {
     return [0, { error: String(e?.message || e) }];
-  } finally {
-    clearTimeout(t);
   }
 }
 

@@ -5,15 +5,17 @@
 /// 每次运行：KV 中缓存的 accessToken 未过期就直接用；否则调 oauth2/token 刷新。
 /// refresh token 会轮换且有重用检测，所以刷新成功后必须立刻把新 rt 写回 KV；
 /// 缓存优先 + 尽量少刷新，避免两次运行并发刷新同一个 rt 导致凭据家族作废。
-/// 签到接口的 yy / x-signature 签名见 signRequest，与鉴权头无关。
+/// 签到接口的 yy / x-signature 签名见 lib/minimax-sign.mjs，与鉴权头无关。
 
 import type { CheckinResult, Env } from "../types";
 import { md5hex } from "../lib/md5";
+import {
+  DEFAULT_DEVICE_ID, DEFAULT_UUID, buildDeviceParams, pyQuotePlus, signRequest as signRequestShared,
+} from "../lib/minimax-sign.mjs";
 import { requestJson } from "../lib/http";
 import { kvReadJson, kvWriteJson } from "../lib/kv";
 import { apiSucceeded, isAuthStatus, isTransientStatus } from "../lib/api";
 
-const HOST = "https://agent.minimax.io";
 const STATUS_PATH = "/minimax-cloud/api/v1/signin/status";
 const CLAIM_PATH = "/minimax-cloud/api/v1/signin/claim";
 
@@ -26,18 +28,6 @@ const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000; // 上游 access token 默认 12 小
 const REFRESH_SKEW_MS = 5 * 60 * 1000; // 到期前 5 分钟就刷新，留足余量
 
 const STORE_KEY = "minimax";
-
-const DEVICE_PARAM_ORDER = [
-  "device_platform", "biz_id", "app_id", "version_code", "unix",
-  "timezone_offset", "is_desktop", "desktop_version", "sys_language",
-  "lang", "uuid", "device_id", "os_name", "browser_name", "device_memory",
-  "cpu_core_num", "browser_language", "browser_platform", "user_id",
-  "op_ticket", "screen_width", "screen_height",
-];
-
-// 稳定的默认设备身份：仅在未设置对应变量时回落使用，避免设备指纹漂移
-const DEFAULT_UUID = "3548c8fa-9ac2-4a28-8f6b-71ecd88bc048";
-const DEFAULT_DEVICE_ID = "1790426211";
 
 const AUTH_FAIL_KEYWORDS = ["unauthorized", "expired", "not login",
   "not logged", "登录", "鉴权", "invalid token", "token invalid", "异常用户"];
@@ -53,49 +43,7 @@ export function cleanValue(raw: string): string {
   return s;
 }
 
-export function pyQuotePlus(s: string): string {
-  // 须与 Python urllib.parse.quote_plus 的结果一致（签名依赖）：仅字母数字 + _ . - ~ 不转义，
-  // 空格 -> +，其余字符按 UTF-8 字节逐个 %XX（大写十六进制）
-  let out = "";
-  for (const b of new TextEncoder().encode(s)) {
-    const c = String.fromCharCode(b);
-    if (/[A-Za-z0-9_.\-~]/.test(c)) out += c;
-    else if (b === 0x20) out += "+";
-    else out += "%" + b.toString(16).toUpperCase().padStart(2, "0");
-  }
-  return out;
-}
-
-function buildDeviceParams(userId: string, uuid: string, deviceId: string): Record<string, string> {
-  const nowMs = Date.now();
-  const v: Record<string, string> = {
-    device_platform: "web",
-    biz_id: "3",
-    app_id: "3001",
-    version_code: "22201",
-    unix: String(nowMs),
-    timezone_offset: "28800",
-    is_desktop: "1",
-    desktop_version: "",
-    sys_language: "en",
-    lang: "en",
-    uuid,
-    device_id: deviceId,
-    os_name: "Windows",
-    browser_name: "Chrome",
-    device_memory: "16",
-    cpu_core_num: "4",
-    browser_language: "zh-CN",
-    browser_platform: "Win32",
-    user_id: userId,
-    op_ticket: "undefined",
-    screen_width: "1536",
-    screen_height: "864",
-  };
-  const out: Record<string, string> = {};
-  for (const k of DEVICE_PARAM_ORDER) out[k] = v[k];
-  return out;
-}
+export { pyQuotePlus };
 
 interface Signed {
   url: string;
@@ -109,33 +57,7 @@ export function buildAuthHeader(token: string): string {
 }
 
 function signRequest(path: string, token: string, params: Record<string, string>, method: string, body: any): Signed {
-  const nowMs = Date.now();
-  const nowSec = Math.floor(nowMs / 1000);
-  // 设备参数里 unix 必须与签名用的 nowMs 完全一致
-  const p = { ...params, unix: String(nowMs), client: "desktop" };
-  const query = Object.entries(p)
-    .map(([k, v]) => `${pyQuotePlus(k)}=${pyQuotePlus(v)}`)
-    .join("&");
-  const hasSearchParamsPath = `${path}?${query}`;
-  const bodyStr = method.toLowerCase() === "get" ? "" : JSON.stringify(body || {});
-
-  const xSignature = md5hex(`${nowSec}I*7Cf%WZ#S&%1RlZJ&C2${bodyStr}`);
-  const yy = md5hex(
-    encodeURIComponent(hasSearchParamsPath) + "_" + "{}" + md5hex(String(nowMs)) + "ooui",
-  );
-
-  const headers: Record<string, string> = {
-    authorization: buildAuthHeader(token),
-    yy,
-    "x-timestamp": String(nowSec),
-    "x-signature": xSignature,
-    origin: "https://agent.minimax.io",
-    referer: "https://agent.minimax.io/",
-    "user-agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MiniMaxAgent/desktop Chrome/124.0 Safari/537.36",
-  };
-  if (method.toLowerCase() !== "get") headers["content-type"] = "application/json";
-  return { url: HOST + path + "?" + query, headers, bodyStr };
+  return signRequestShared(path, token, params, method, body, md5hex);
 }
 
 function apiCall(signed: Signed, method: string): Promise<[number, any]> {
@@ -276,12 +198,7 @@ async function resolveAccessToken(env: Env, force = false): Promise<TokenResolut
     }
   }
 
-  // 刷新失败时的最后兜底：env 里直接给的 mmoat_ accessToken，其次沿用 KV 缓存的 token（可能已过期）
-  const direct = cleanValue(env.MINIMAX_ACCESS_TOKEN || "");
-  if (direct.startsWith("mmoat_")) {
-    warnings.push(`refresh token 刷新失败（${failures.join("；") || "未配置"}），本次改用环境变量 accessToken`);
-    return { token: direct, source: "环境变量 accessToken", refreshed: false, warnings, error: "" };
-  }
+  // 刷新失败时的最后兜底：沿用 KV 缓存的 token（可能已过期）
   if (cache?.accessToken) {
     warnings.push(`refresh token 刷新失败（${failures.join("；") || "未配置"}），本次沿用已过期的缓存 token`);
     return { token: cache.accessToken, source: "KV 缓存（可能已过期）", refreshed: false, warnings, error: "" };

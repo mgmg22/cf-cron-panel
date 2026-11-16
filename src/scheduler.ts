@@ -1,6 +1,7 @@
 /// 任务执行与按分钟调度：Cron Trigger 每分钟触发一次，这里按 KV 中的任务配置判断哪些任务到点。
 
 import type { CheckinResult, Env } from "./types";
+import { acquireLock, releaseLock } from "./lib/kv";
 import { cronMatches, parseCron } from "./lib/cron";
 import { loadConfig, saveLastRun, type RunRecord, type TaskConfig } from "./lib/store";
 import { TASKS, type RunOptions, type TaskDef } from "./tasks/registry";
@@ -13,8 +14,28 @@ export function loadTaskConfig(env: Env) {
   return loadConfig(env.CHECKIN_STATE, defaultConfig());
 }
 
-/** 执行单个任务：异常转为 ERROR 结果；非 dry 时覆盖保存「最近一次结果」。 */
+/** 执行单个任务：异常转为 ERROR 结果；非 dry 时覆盖保存「最近一次结果」。
+ *  非 dry 时加互斥锁，任务已在运行则直接丢弃本次触发并返回 null（不排队、不重发）。 */
 export async function runTask(
+  env: Env,
+  task: TaskDef,
+  trigger: RunRecord["trigger"],
+  opts?: RunOptions,
+): Promise<RunRecord | null> {
+  const lockKey = `lock:${task.id}`;
+  const locked = !opts?.dry;
+  if (locked && !(await acquireLock(env.CHECKIN_STATE, lockKey))) {
+    console.warn(`[${task.id}] 已有同名任务在运行，丢弃本次触发（${trigger}）`);
+    return null;
+  }
+  try {
+    return await execute(env, task, trigger, opts);
+  } finally {
+    if (locked) await releaseLock(env.CHECKIN_STATE, lockKey);
+  }
+}
+
+async function execute(
   env: Env,
   task: TaskDef,
   trigger: RunRecord["trigger"],

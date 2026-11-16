@@ -8,7 +8,7 @@
 //   node scripts/export-env.mjs --mask                   # 值只显示首尾几位，便于检查
 //   node scripts/export-env.mjs --json                   # 以 JSON 输出
 //   node scripts/export-env.mjs --push [--worker 名称]   # 推送到 Cloudflare Secrets
-//   node scripts/export-env.mjs --login-workbuddy        # WorkBuddy 改用浏览器授权登录获取令牌
+//   node scripts/export-env.mjs --login-workbuddy        # WorkBuddy 用浏览器授权登录获取令牌
 //   node scripts/export-env.mjs --login-workbuddy --wb2 --only workbuddy --push  # 给账号 2 授权并导出 WB2_*
 //   node scripts/export-env.mjs --login-minimax [--push] # MiniMax 用 OAuth2 设备授权获取独立 refresh token（默认只处理 minimax）
 //   node scripts/export-env.mjs --login-minimax --resume # 中断后续接等待授权（device_code 仍在有效期内）
@@ -36,6 +36,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_DEVICE_ID, DEFAULT_UUID, buildDeviceParams, signRequest } from "../src/lib/minimax-sign.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // 无法从本机读取、或本机读不到时由 shell 环境变量显式提供的变量（--push 时一并推送，环境变量优先于本机读取值）
@@ -142,8 +143,6 @@ function exportWorkbuddy(override) {
   const uid = String(j.account?.uid ?? "").trim();
   if (!uid) throw new Error(`${file} 中缺少 account.uid`);
   const values = { WB_USER_ID: uid };
-  const domain = String(j.auth?.domain || "").trim();
-  if (domain) values.WB_DOMAIN = domain;
 
   const raw = j.auth?.accessToken;
   if (typeof raw === "string" && raw.trim()) {
@@ -152,7 +151,7 @@ function exportWorkbuddy(override) {
     log(`[workbuddy] 读取 ${file}${exp ? `；token ${expText(exp)}` : ""}`);
   } else {
     // 桌面端把 accessToken 加密存储（{ $wbEncrypted, envelope }，密钥不在该文件内），无法从文件直接读取
-    log(`[workbuddy] 读取 ${file}：accessToken 已被桌面端加密，只导出 WB_USER_ID / WB_DOMAIN；` +
+    log(`[workbuddy] 读取 ${file}：accessToken 已被桌面端加密，只导出 WB_USER_ID；` +
       "WB_ACCESS_TOKEN 可用 --login-workbuddy 通过浏览器授权登录获取，或手动设置环境变量后 --push");
   }
   return values;
@@ -257,7 +256,6 @@ async function loginWorkbuddy() {
 
   const values = { WB_ACCESS_TOKEN: tok.accessToken, WB_USER_ID: uid };
   if (tok.refreshToken) values.WB_REFRESH_TOKEN = tok.refreshToken;
-  if (tok.domain) values.WB_DOMAIN = String(tok.domain);
   const expMs = tok.expiresIn ? Date.now() + Number(tok.expiresIn) * 1000 : jwtExpMs(tok.accessToken);
   log(`[workbuddy] 登录成功；token ${expText(expMs)}`);
   return values;
@@ -360,8 +358,6 @@ const MM_SCOPE = "agent.default";
 const MM_AUDIENCE = "agent-backend";
 const MM_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 const MM_SESSION_FILE = path.join(os.tmpdir(), "cf-cron-panel-minimax-device.json");
-const MM_DEFAULT_UUID = "3548c8fa-9ac2-4a28-8f6b-71ecd88bc048";
-const MM_DEFAULT_DEVICE_ID = "1790426211";
 
 function cleanString(s) {
   let v = String(s || "").trim();
@@ -462,46 +458,19 @@ async function mmPoll(session) {
   throw new Error("等待授权超时（设备码 5 分钟有效），请重新运行 --login-minimax");
 }
 
-/** 用新 accessToken 打一次签到状态接口，确认 Bearer + 签名链路可用（失败只警告，不影响导出）。 */
-function mmQuotePlus(s) {
-  let out = "";
-  for (const b of Buffer.from(s, "utf8")) {
-    const c = String.fromCharCode(b);
-    if (/[A-Za-z0-9_.\-~]/.test(c)) out += c;
-    else if (b === 0x20) out += "+";
-    else out += "%" + b.toString(16).toUpperCase().padStart(2, "0");
-  }
-  return out;
-}
+/** 用新 accessToken 打一次签到状态接口，确认 Bearer + 签名链路可用（失败只警告，不影响导出）。签名逻辑与 Worker 共用。 */
 const mmMd5 = (s) => crypto.createHash("md5").update(s, "utf8").digest("hex");
 
 async function mmVerify(accessToken, userId) {
-  const nowMs = Date.now();
-  const nowSec = Math.floor(nowMs / 1000);
-  const pathname = "/minimax-cloud/api/v1/signin/status";
-  const params = {
-    device_platform: "web", biz_id: "3", app_id: "3001", version_code: "22201",
-    unix: String(nowMs), timezone_offset: "28800", is_desktop: "1", desktop_version: "",
-    sys_language: "en", lang: "en",
-    uuid: devVarsValue("MINIMAX_UUID") || MM_DEFAULT_UUID,
-    device_id: devVarsValue("MINIMAX_DEVICE_ID") || MM_DEFAULT_DEVICE_ID,
-    os_name: "Windows", browser_name: "Chrome", device_memory: "16", cpu_core_num: "4",
-    browser_language: "zh-CN", browser_platform: "Win32", user_id: userId,
-    op_ticket: "undefined", screen_width: "1536", screen_height: "864", client: "desktop",
-  };
-  const query = Object.entries(params).map(([k, v]) => `${mmQuotePlus(k)}=${mmQuotePlus(v)}`).join("&");
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
-    yy: mmMd5(encodeURIComponent(`${pathname}?${query}`) + "_" + "{}" + mmMd5(String(nowMs)) + "ooui"),
-    "x-timestamp": String(nowSec),
-    "x-signature": mmMd5(`${nowSec}I*7Cf%WZ#S&%1RlZJ&C2`),
-    origin: "https://agent.minimax.io",
-    referer: "https://agent.minimax.io/",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) MiniMaxAgent/desktop Chrome/124.0 Safari/537.36",
-    Accept: "application/json",
-  };
+  const params = buildDeviceParams(
+    userId,
+    devVarsValue("MINIMAX_UUID") || DEFAULT_UUID,
+    devVarsValue("MINIMAX_DEVICE_ID") || DEFAULT_DEVICE_ID,
+  );
+  const { url, headers } = signRequest("/minimax-cloud/api/v1/signin/status", accessToken, params, "GET", {}, mmMd5);
+  headers.Accept = "application/json";
   try {
-    const res = await fetch(`https://agent.minimax.io${pathname}?${query}`, { headers });
+    const res = await fetch(url, { headers });
     const text = await res.text();
     let j = {};
     try { j = JSON.parse(text); } catch { /* 非 JSON 响应按失败处理 */ }
@@ -535,7 +504,6 @@ async function loginMinimax(opts) {
   log(`[minimax] 授权成功；accessToken ${expText(expMs)}；已取得独立 refreshToken（不影响桌面端会话）`);
 
   const values = { MINIMAX_REFRESH_TOKEN: refreshToken };
-  if (accessToken) values.MINIMAX_ACCESS_TOKEN = accessToken;
   const userId = cleanString(opts.minimaxUserId || process.env.MINIMAX_USER_ID || devVarsValue("MINIMAX_USER_ID"));
   if (userId) {
     values.MINIMAX_USER_ID = userId;

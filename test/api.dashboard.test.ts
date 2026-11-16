@@ -56,17 +56,15 @@ describe("PUT /api/tasks/:id", () => {
     const r = await handleApi(req("/api/tasks/xb", { method: "PUT", json: { cron: "  5   8-22   * * * " } }), envWith(kv));
     expect(r.status).toBe(200);
     expect((await body(r)).cron).toBe("5 8-22 * * *");
-    expect(JSON.parse(store.get("cfg:tasks")!)).toEqual({
-      checkin: { cron: "8 0 * * *", enabled: true },
-      xb: { cron: "5 8-22 * * *", enabled: true },
-    });
+    expect(JSON.parse(store.get("cfg:task:xb")!)).toEqual({ cron: "5 8-22 * * *", enabled: true });
+    expect(store.has("cfg:task:checkin")).toBe(false); // 其他任务不被写入
   });
 
   it("切换启用状态", async () => {
     const { kv, store } = fakeKv();
     const r = await body(await handleApi(req("/api/tasks/checkin", { method: "PUT", json: { enabled: false } }), envWith(kv)));
     expect(r).toMatchObject({ enabled: false, nextRunAt: null });
-    expect(JSON.parse(store.get("cfg:tasks")!).checkin.enabled).toBe(false);
+    expect(JSON.parse(store.get("cfg:task:checkin")!).enabled).toBe(false);
   });
 
   it("参数非法返回 400，且不写 KV", async () => {

@@ -6,12 +6,10 @@ export interface Env {
   WB_ACCESS_TOKEN?: string;
   WB_USER_ID?: string;
   WB_REFRESH_TOKEN?: string; // 可选：配置后自动续期 token（由 export-env.mjs --login-workbuddy 导出）
-  WB_DOMAIN?: string; // 可选：出站 X-Domain 头（取自登录态 auth.domain，如 www.workbuddy.cn）
   // WorkBuddy（账号 2，可选；不配置则只跑账号 1）
   WB2_ACCESS_TOKEN?: string;
   WB2_USER_ID?: string;
   WB2_REFRESH_TOKEN?: string;
-  WB2_DOMAIN?: string; // 同 WB_DOMAIN
   // Trae Work
   TRAE_TOKEN?: string;
   TRAE_DEVICE_ID?: string;
@@ -23,7 +21,6 @@ export interface Env {
   TRAE_APP_VERSION?: string;
   // MiniMax Code（OAuth2 设备授权，见 scripts/export-env.mjs --login-minimax）
   MINIMAX_REFRESH_TOKEN?: string; // 长效凭据：设备授权获得的独立 refresh token（轮换后的值由 Worker 存 KV）
-  MINIMAX_ACCESS_TOKEN?: string; // 可选：直接给短时 accessToken（mmoat_ 开头），一般不用配
   MINIMAX_USER_ID?: string;
   MINIMAX_UUID?: string;
   MINIMAX_DEVICE_ID?: string;
